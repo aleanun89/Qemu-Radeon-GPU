@@ -1,4 +1,46 @@
-# Cambios v3 → v4
+# Cambios
+
+## Tarjetas de las VBIOS aportadas (9550, X300 SE, X550, X600, X850)
+
+A partir de las ROM de `bios/` (locales, no versionadas):
+
+- **Perfiles nuevos:**
+
+  | Modelo | Chip | PCI ID | Bus |
+  |---|---|---|---|
+  | `r9550` | RV350 | `1002:4153` | AGP |
+  | `x300se` | RV370 | `1002:5B62` | PCIe |
+  | `x600xt` | RV380 | `1002:3E50` | PCIe |
+  | `x550xtx` | RV410 | `1002:5657` | PCIe |
+  | `x850xt` | R480 | `1002:5D52` | PCIe |
+  | `x850xt-agp` | R481 | `1002:4B49` | AGP |
+
+  Relojes tomados del FirmwareInfo de las AtomBIOS cuando existían.
+- **GART PCI de la R100** (`AIC_CNTL/AIC_PT_BASE/AIC_LO_ADDR/AIC_HI_ADDR`,
+  según `r100_pci_gart_enable`):
+  - es lo que usa `radeon` con tarjetas AGP (QEMU no tiene bus AGP) y con
+    tarjetas PCIe en un bus PCI convencional;
+  - el núcleo elige el GART que haya activado el driver;
+  - resultado: las PCIe ya **no requieren `q35`**, y el adaptador deja de
+    mostrar el aviso.
+- **Cambios de modelo:**
+  - la familia `RLG_FAMILY_R300_PCIE` pasa a llamarse `RLG_FAMILY_R300`;
+  - cada chip declara su bus real (`RLGBus`: IGP/AGP/PCIe); el adaptador solo
+    añade la capability PCI Express a las tarjetas PCIe;
+  - el campo `integrated` se sustituye por `bus`;
+  - el estado del GART incluye `kind`.
+- **R4xx** (RV410, R480, R481): `GB_PIPE_SELECT` informa de los quads de pipes
+  (R480 = 4, RV410 = 2). `r420_pipes_init` lo lee al arrancar.
+- `rlg_profile_models()`: lista única de modelos para los mensajes de error de
+  la demo y del adaptador.
+- **`tools/romid.py`:**
+  - identifica una VBIOS (PCI ID, AtomBIOS/COMBIOS, part number, relojes);
+  - dice qué `model=` usar;
+  - lee la tabla de perfiles de las fuentes C.
+- **Tests nuevos:**
+  - un perfil por cada ROM aportada;
+  - GART PCI con 9550, X850 XT AGP y X700 en bus PCI (ring + IB por GART);
+  - `GB_PIPE_SELECT`.
 
 ## Tarjetas dedicadas X300 y X700 (PCIe)
 

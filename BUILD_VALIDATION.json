@@ -12,11 +12,15 @@
     "CP ring + CSQ gating + indirect buffer + ONE_REG_WR + fence + RPTR/scratch writeback + incomplete packet",
     "AVIVO D1 scanout and VBlank interrupt/ack",
     "RS600 flat page table GART",
-    "X700 (RV410): PCIe indirect space, RV370 PCIe GART (table in VRAM, >4 GiB PTE, last-page bound), ring + IB + fence, legacy scanout"
+    "X700 (RV410): PCIe indirect space, RV370 PCIe GART (table in VRAM, >4 GiB PTE, last-page bound), ring + IB + fence, legacy scanout",
+    "one profile per user VBIOS: PCI ID and bus match the ROM PCIR header",
+    "R100 PCI GART (AIC_*) on Radeon 9550, X850 XT AGP and X700 on a PCI bus: translation, HI_ADDR bound, IB fetched through the GART, fallback to PCIe GART",
+    "R4xx GB_PIPE_SELECT quad count (R480 = 4, RV410 = 2, RV370 = none)"
   ],
   "tests_status": "passed",
-  "tests_mutation_check": "reintroducing the v3 PTE-valid bit and SC_TOP_LEFT decode makes 10 checks fail; breaking the PCIe PTE decode makes 3 checks fail",
-  "demo": "rs480, x300, x700xt (legacy CRTC), rs600 and rs690 (AVIVO) 640x480x32 scanout + 2D fill passed",
+  "tests_mutation_check": "reintroducing the v3 PTE-valid bit and SC_TOP_LEFT decode makes 10 checks fail; breaking the PCIe PTE decode makes 3 checks fail; disabling the PCI GART makes 12 checks fail",
+  "demo": "rs480, x300, x700xt, r9550, x600xt, x550xtx, x850xt, x850xt-agp (legacy CRTC), rs600 and rs690 (AVIVO) 640x480x32 scanout + 2D fill passed",
+  "romid_tool": "tools/romid.py identified all 10 local ROMs in bios/ (not versioned) and matched each to a profile",
   "qemu_pcie_note": "hybrid PCI/PCIe pattern (INTERFACE_PCIE_DEVICE + QEMU_PCI_CAP_EXPRESS in a parent-realize wrapper + pcie_endpoint_cap_init) follows hw/virtio/virtio-pci.c; signatures checked against QEMU master headers, not compiled",
   "vulkan_backend_compiled_with_sdk": false,
   "qemu_overlay_patcher": "run twice against hw/display/{meson.build,Kconfig,vga_int.h} from QEMU master 11.1.50: idempotent",

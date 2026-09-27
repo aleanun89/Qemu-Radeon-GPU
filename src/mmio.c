@@ -9,7 +9,7 @@ static bool mc_pair(const RLGDevice *d, uint32_t a, bool *is_data)
     switch (d->chip->family) {
     case RLG_FAMILY_RS600: idx = RLG_RS600_MC_INDEX; break;
     case RLG_FAMILY_RS690: idx = RLG_RS690_MC_INDEX; break;
-    case RLG_FAMILY_R300_PCIE: idx = RLG_PCIE_INDEX; break;
+    case RLG_FAMILY_R300: idx = RLG_PCIE_INDEX; break;
     case RLG_FAMILY_RS400:
     default: idx = RLG_RS480_NB_MC_INDEX; break;
     }
@@ -25,7 +25,7 @@ static uint32_t mc_index_reg(const RLGDevice *d)
     switch (d->chip->family) {
     case RLG_FAMILY_RS600: return d->mc_index & RLG_RS600_MC_ADDR_MASK;
     case RLG_FAMILY_RS690: return d->mc_index & RLG_RS690_MC_INDEX_MASK;
-    case RLG_FAMILY_R300_PCIE: return d->mc_index & RLG_PCIE_REG_MASK;
+    case RLG_FAMILY_R300: return d->mc_index & RLG_PCIE_REG_MASK;
     case RLG_FAMILY_RS400:
     default: return d->mc_index & 0xffu;
     }
@@ -36,7 +36,7 @@ static bool mc_write_enabled(const RLGDevice *d)
     switch (d->chip->family) {
     case RLG_FAMILY_RS600: return (d->mc_index & RLG_RS600_MC_IND_WR_EN) != 0;
     case RLG_FAMILY_RS690: return (d->mc_index & RLG_RS690_MC_INDEX_WR_EN) != 0;
-    case RLG_FAMILY_R300_PCIE: return true;                 /* PCIE_DATA has no write enable */
+    case RLG_FAMILY_R300: return true;                 /* PCIE_DATA has no write enable */
     case RLG_FAMILY_RS400:
     default: return (d->mc_index & RLG_RS480_NB_MC_IND_WR_EN) != 0;
     }
@@ -233,7 +233,13 @@ static void w32(RLGDevice *d, uint32_t a, uint32_t v)
     case RLG_CRTC_OFFSET: d->display.offset = v; return;
     case RLG_CRTC_OFFSET_CNTL: d->display.offset_cntl = v; return;
     case RLG_CRTC_PITCH: d->display.pitch = v; return;
-    case RLG_MC_AGP_LOCATION: rlg__gart_update(d); return;
+    case RLG_MC_AGP_LOCATION:
+    case RLG_AIC_CNTL:
+    case RLG_AIC_PT_BASE:
+    case RLG_AIC_LO_ADDR:
+    case RLG_AIC_HI_ADDR:
+        rlg__gart_update(d);
+        return;
     case RLG_CP_RB_BASE: d->cp.base = v; return;
     case RLG_CP_RB_CNTL: d->cp.cntl = v; return;
     case RLG_CP_RB_RPTR_ADDR: d->cp.rptr_addr = v; return;

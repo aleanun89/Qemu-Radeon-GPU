@@ -37,6 +37,11 @@
 #define RLG_MC_FB_LOCATION              0x0148u  /* RS400/RS480 */
 #define RLG_MC_AGP_LOCATION             0x014cu  /* RS400/RS480 */
 #define RLG_MC_STATUS                   0x0150u
+#define RLG_AIC_CNTL                    0x01d0u  /* R100 PCI GART: bit0 PCIGART_TRANSLATE_EN */
+#define RLG_AIC_PT_BASE                 0x01d8u  /* table in system memory, 32-bit entries */
+#define RLG_AIC_LO_ADDR                 0x01dcu  /* first GPU address of the aperture */
+#define RLG_AIC_HI_ADDR                 0x01e0u  /* last GPU address (inclusive) */
+#define RLG_PCIGART_TRANSLATE_EN        (1u << 0)
 #define RLG_RS480_NB_MC_INDEX           0x0168u  /* RS400/RS480: MC indirect index */
 #define RLG_RS480_NB_MC_DATA            0x016cu
 #define RLG_AGP_BASE                    0x0170u
@@ -109,8 +114,13 @@
 #define RLG_DEFAULT_SC_BOTTOM_RIGHT     0x16e8u
 #define RLG_SC_TOP_LEFT                 0x16ecu  /* left 13:0, top 29:16 */
 #define RLG_SC_BOTTOM_RIGHT             0x16f0u  /* right 13:0, bottom 29:16 */
+#define RLG_DST_PIPE_CONFIG             0x170cu
 #define RLG_WAIT_UNTIL                  0x1720u
 #define RLG_GUI_STAT                    0x1740u
+
+/* ---- MMIO: 3D engine (only what init code reads) -------------------- */
+#define RLG_GB_TILE_CONFIG              0x4018u
+#define RLG_GB_PIPE_SELECT              0x402cu  /* R4xx: 13:12 = number of quad pipes - 1 */
 
 /* ---- MMIO: AVIVO display (RS600/RS690) ------------------------------ */
 #define RLG_AVIVO_BASE                  0x6000u

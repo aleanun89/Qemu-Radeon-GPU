@@ -49,7 +49,7 @@ static void mc_w(RLGDevice *d, uint32_t reg, uint32_t v)
     switch (d->chip->family) {
     case RLG_FAMILY_RS690: w(d, RLG_RS690_MC_INDEX, reg | RLG_RS690_MC_INDEX_WR_EN); w(d, RLG_RS690_MC_DATA, v); break;
     case RLG_FAMILY_RS600: w(d, RLG_RS600_MC_INDEX, reg | RLG_RS600_MC_IND_WR_EN); w(d, RLG_RS600_MC_DATA, v); break;
-    case RLG_FAMILY_R300_PCIE: w(d, RLG_PCIE_INDEX, reg); w(d, RLG_PCIE_DATA, v); break;
+    case RLG_FAMILY_R300: w(d, RLG_PCIE_INDEX, reg); w(d, RLG_PCIE_DATA, v); break;
     default: w(d, RLG_RS480_NB_MC_INDEX, reg | RLG_RS480_NB_MC_IND_WR_EN); w(d, RLG_RS480_NB_MC_DATA, v); break;
     }
 }
@@ -66,11 +66,28 @@ static void test_profiles(void)
     CHECK(!rlg_profile_parse("bogus", &p));
     CHECK(!rlg_chip_info(RLG_PROFILE_X1250_AMD)->hw_tcl);
     CHECK(rlg_profile_parse("x300", &p) && rlg_chip_info(p)->device_id == 0x5b60);
-    CHECK(rlg_chip_info(p)->family == RLG_FAMILY_R300_PCIE && rlg_chip_info(p)->hw_tcl);
+    CHECK(rlg_chip_info(p)->family == RLG_FAMILY_R300 && rlg_chip_info(p)->hw_tcl);
     CHECK(rlg_profile_parse("x700", &p) && rlg_chip_info(p)->device_id == 0x5e4d);
     CHECK(rlg_profile_parse("x700xt", &p) && rlg_chip_info(p)->device_id == 0x5e4a);
-    CHECK(rlg_profile_parse("x700m", &p) && rlg_chip_info(p)->mobile && !rlg_chip_info(p)->integrated);
-    CHECK(!rlg_family_is_avivo(RLG_FAMILY_R300_PCIE) && rlg_family_is_avivo(RLG_FAMILY_RS690));
+    CHECK(rlg_profile_parse("x700m", &p) && rlg_chip_info(p)->mobile && rlg_chip_info(p)->bus == RLG_BUS_PCIE);
+    /* one profile per user-supplied VBIOS: PCI ID must match the ROM's PCIR */
+    static const struct { const char *model; uint16_t id; RLGBus bus; } roms[] = {
+        { "x300", 0x5b60, RLG_BUS_PCIE }, { "x700pro", 0x5e4b, RLG_BUS_PCIE },
+        { "x850xt", 0x5d52, RLG_BUS_PCIE }, { "x850xt-agp", 0x4b49, RLG_BUS_AGP },
+        { "r9550", 0x4153, RLG_BUS_AGP }, { "x600xt", 0x3e50, RLG_BUS_PCIE },
+        { "x550xtx", 0x5657, RLG_BUS_PCIE }, { "x300se", 0x5b62, RLG_BUS_PCIE },
+        { "x300m", 0x5460, RLG_BUS_PCIE },
+    };
+    for (size_t i = 0; i < sizeof(roms) / sizeof(roms[0]); ++i) {
+        CHECK(rlg_profile_parse(roms[i].model, &p));
+        CHECK(rlg_chip_info(p)->device_id == roms[i].id && rlg_chip_info(p)->bus == roms[i].bus);
+        CHECK(rlg_chip_info(p)->family == RLG_FAMILY_R300 && rlg_chip_info(p)->hw_tcl);
+    }
+    for (unsigned i = 0; i < RLG_PROFILE_COUNT; ++i) {      /* every profile has a name alias */
+        const RLGChipInfo *c = rlg_chip_info((RLGProfile)i);
+        CHECK(c->profile == (RLGProfile)i && c->name && c->device_id && c->ps_profile);
+    }
+    CHECK(!rlg_family_is_avivo(RLG_FAMILY_R300) && rlg_family_is_avivo(RLG_FAMILY_RS690));
 }
 
 static void test_mm_index_guard(void)
@@ -392,6 +409,64 @@ static void test_x700_pcie(void)
     rlg_destroy(d);
 }
 
+/*
+ * AGP cards (Radeon 9550, X850 XT AGP) and PCIe cards on a conventional bus
+ * use the R100 PCI GART: r100_pci_gart_enable() + entries = bus address.
+ */
+static void test_pci_gart(RLGProfile profile)
+{
+    RLGDevice *d = make(profile);
+    const uint32_t fb = 0xd0000000u, table = 0x300000u, gtt = 0xe0000000u;
+    uint32_t v = 0x9550u, wp = 0;
+    uint64_t phys = 0;
+
+    w(d, RLG_MC_FB_LOCATION, (((fb + d->vram_size - 1u) >> 16) << 16) | (fb >> 16));
+    for (uint32_t i = 0; i < 8; ++i) {
+        put32(sysmem + table + i * 4, T_PAGES + i * 4096u);
+    }
+    w(d, RLG_AIC_CNTL, rlg_reg_read32(d, RLG_AIC_CNTL) | 2u);      /* DIS_OUT_OF_PCI_GART_ACCESS */
+    w(d, RLG_AIC_LO_ADDR, gtt);
+    w(d, RLG_AIC_HI_ADDR, gtt + (32u << 20) - 1u);
+    w(d, RLG_AIC_PT_BASE, table);
+    CHECK(!d->gart.enabled || d->gart.kind != RLG_GART_PCI);
+    w(d, RLG_AIC_CNTL, rlg_reg_read32(d, RLG_AIC_CNTL) | RLG_PCIGART_TRANSLATE_EN);
+    CHECK(d->gart.enabled && d->gart.kind == RLG_GART_PCI && d->gart.aperture_size == (32u << 20));
+
+    CHECK(rlg_gpu_write(d, gtt + 3 * 4096u + 0x10, &v, 4) == 0);
+    CHECK(get32(sysmem + T_PAGES + 3 * 4096u + 0x10) == v);
+    CHECK(rlg_gart_translate(d, gtt + (32u << 20), &phys) != 0);  /* past HI_ADDR */
+
+    /* ring in VRAM, IB through the PCI GART */
+    put32(sysmem + T_PAGES + 4096u, RLG_PM4_PACKET0(RLG_SCRATCH_REG0, 1));
+    put32(sysmem + T_PAGES + 4096u + 4, 0x4153);
+    w(d, RLG_CP_RB_CNTL, 9 | RLG_RB_NO_UPDATE);
+    w(d, RLG_CP_RB_BASE, fb + 0x10000);
+    w(d, RLG_CP_CSQ_CNTL, 4u << RLG_CSQ_MODE_SHIFT);
+    ring_put(d, &wp, RLG_PM4_PACKET0(RLG_CP_IB_BASE, 2));
+    ring_put(d, &wp, gtt + 4096u);
+    ring_put(d, &wp, 2);
+    w(d, RLG_CP_RB_WPTR, wp);
+    CHECK(r(d, RLG_SCRATCH_REG0) == 0x4153 && d->cp.faults == 0);
+
+    /* disabling the PCI GART falls back to the (disabled) PCIe GART */
+    w(d, RLG_AIC_CNTL, 0);
+    CHECK(d->gart.kind == RLG_GART_PCIE && !d->gart.enabled);
+    rlg_destroy(d);
+}
+
+static void test_r4xx_pipes(void)
+{
+    RLGDevice *d = make(RLG_PROFILE_X850XT);
+    CHECK(((r(d, RLG_GB_PIPE_SELECT) >> 12) & 3u) + 1u == 4u);      /* R480: 16 pipes = 4 quads */
+    rlg_destroy(d);
+    d = make(RLG_PROFILE_X700PRO);
+    CHECK(((r(d, RLG_GB_PIPE_SELECT) >> 12) & 3u) + 1u == 2u);      /* RV410: 8 pipes */
+    rlg_destroy(d);
+    d = make(RLG_PROFILE_X300);
+    CHECK(r(d, RLG_GB_PIPE_SELECT) == 0);                           /* RV370 has no such reg */
+    rlg_destroy(d);
+}
+
 int main(void)
 {
     sysmem = calloc(1, SYSMEM_SIZE);
@@ -408,6 +483,10 @@ int main(void)
     test_avivo();
     test_rs600_gart();
     test_x700_pcie();
+    test_pci_gart(RLG_PROFILE_R9550);
+    test_pci_gart(RLG_PROFILE_X850XT_AGP);
+    test_pci_gart(RLG_PROFILE_X700);        /* PCIe card on a conventional PCI bus */
+    test_r4xx_pipes();
     free(sysmem);
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

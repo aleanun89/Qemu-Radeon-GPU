@@ -3,7 +3,6 @@
  * (API usage mirrors hw/display/ati.c of that release).
  */
 #include "qemu/osdep.h"
-#include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -166,8 +165,7 @@ static bool rlg_qemu_profile(RadeonLegacyVGAState *s, RLGProfile *profile, Error
 {
     *profile = RLG_PROFILE_X1250_AMD;
     if (s->model && !rlg_profile_parse(s->model, profile)) {
-        error_setg(errp, "unknown model '%s' (rs480, rs480m, rs600, rs600m, rs690, rs690m, "
-                   "x300, x300m, x700, x700pro, x700xt, x700m)", s->model);
+        error_setg(errp, "unknown model '%s' (%s)", s->model, rlg_profile_models());
         return false;
     }
     return true;
@@ -176,9 +174,11 @@ static bool rlg_qemu_profile(RadeonLegacyVGAState *s, RLGProfile *profile, Error
 static DeviceRealize rlg_qemu_parent_dc_realize;
 
 /*
- * Hybrid PCI/PCIe device: the discrete X300/X700 must look like PCIe, because
- * radeon picks the PCIe GART only when pci_is_pcie() (radeon_kms.c). This has
- * to be decided before pci_qdev_realize() sizes the config space.
+ * Hybrid PCI/PCIe device. PCIe cards (X300, X600, X700, X850 XT...) get a PCI
+ * Express capability when plugged into a PCIe bus, so radeon picks the PCIe
+ * GART (it checks pci_is_pcie() in radeon_kms.c). This has to be decided
+ * before pci_qdev_realize() sizes the config space. AGP cards and PCIe cards
+ * on a conventional bus end up as plain PCI and use the R100 PCI GART.
  */
 static void rlg_qemu_dc_realize(DeviceState *dev, Error **errp)
 {
@@ -188,7 +188,7 @@ static void rlg_qemu_dc_realize(DeviceState *dev, Error **errp)
     if (!rlg_qemu_profile(s, &profile, errp)) {
         return;
     }
-    if (rlg_chip_info(profile)->family == RLG_FAMILY_R300_PCIE) {
+    if (rlg_chip_info(profile)->bus == RLG_BUS_PCIE) {
         s->parent_obj.cap_present |= QEMU_PCI_CAP_EXPRESS;
     }
     rlg_qemu_parent_dc_realize(dev, errp);
@@ -221,10 +221,8 @@ static void rlg_qemu_realize(PCIDevice *pdev, Error **errp)
                 return;
             }
         } else {
+            /* Conventional bus: behave as plain PCI (driver uses the PCI GART). */
             pdev->cap_present &= ~QEMU_PCI_CAP_EXPRESS;
-            warn_report("%s on a conventional PCI bus: the radeon driver will try the "
-                        "R100 PCI GART, which is not emulated; use -machine q35",
-                        chip->name);
         }
     }
 

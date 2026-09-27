@@ -36,8 +36,7 @@ int main(int argc, char **argv)
     uint32_t px = 0;
 
     if (argc > 1 && !rlg_profile_parse(argv[1], &p)) {
-        fprintf(stderr, "unknown profile '%s' (rs480, rs480m, rs600, rs600m, rs690, rs690m, "
-                        "x300, x300m, x700, x700pro, x700xt, x700m)\n", argv[1]);
+        fprintf(stderr, "unknown profile '%s' (%s)\n", argv[1], rlg_profile_models());
         return 2;
     }
     c = (RLGConfig){ .profile = p, .backend = RLG_BACKEND_SOFTWARE, .irq = irq };

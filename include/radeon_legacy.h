@@ -17,10 +17,16 @@ extern "C" {
 #define RLG_DEVICE_RS690M               0x791fu
 #define RLG_DEVICE_X300                 0x5b60u  /* RV370 */
 #define RLG_DEVICE_X300M                0x5460u  /* RV370/M22 */
+#define RLG_DEVICE_X300SE               0x5b62u  /* RV370, sold as X300 SE / X600 SE */
 #define RLG_DEVICE_X700                 0x5e4du  /* RV410 */
 #define RLG_DEVICE_X700PRO              0x5e4bu
 #define RLG_DEVICE_X700XT               0x5e4au
 #define RLG_DEVICE_X700M                0x5652u  /* RV410/M26 */
+#define RLG_DEVICE_R9550                0x4153u  /* RV350, AGP */
+#define RLG_DEVICE_X600XT               0x3e50u  /* RV380, PCIe */
+#define RLG_DEVICE_X550XTX              0x5657u  /* RV410, PCIe */
+#define RLG_DEVICE_X850XT               0x5d52u  /* R480, PCIe */
+#define RLG_DEVICE_X850XT_AGP           0x4b49u  /* R481, AGP */
 #define RLG_MMIO_SIZE                   0x10000u
 #define RLG_PAGE_SIZE                   4096u
 #define RLG_NUM_SCRATCH                 8u
@@ -38,6 +44,12 @@ typedef enum {
     RLG_PROFILE_X700PRO,
     RLG_PROFILE_X700XT,
     RLG_PROFILE_X700M,
+    RLG_PROFILE_R9550,              /* RV350, discrete AGP */
+    RLG_PROFILE_X600XT,             /* RV380, discrete PCIe */
+    RLG_PROFILE_X550XTX,            /* RV410, discrete PCIe */
+    RLG_PROFILE_X850XT,             /* R480, discrete PCIe */
+    RLG_PROFILE_X850XT_AGP,         /* R481, discrete AGP */
+    RLG_PROFILE_X300SE,             /* RV370, discrete PCIe */
     RLG_PROFILE_COUNT
 } RLGProfile;
 
@@ -46,8 +58,17 @@ typedef enum {
     RLG_FAMILY_RS400 = 0,   /* legacy CRTC, MC_FB_LOCATION @0x148, RS400 GART */
     RLG_FAMILY_RS600,       /* AVIVO, MC indirect @0x70, flat page table GART */
     RLG_FAMILY_RS690,       /* AVIVO, MC indirect @0x78, RS400 GART */
-    RLG_FAMILY_R300_PCIE,   /* RV370/RV380/RV410: legacy CRTC, PCIe indirect @0x30, PCIe GART */
+    RLG_FAMILY_R300,        /* discrete R3xx/R4xx: legacy CRTC, PCIe GART (@0x30 indirect)
+                               or R100 PCI GART (AIC_*), whichever the driver enables */
 } RLGFamily;
+
+/* Bus of the real card. QEMU has no AGP: AGP parts are exposed as plain PCI and
+ * the radeon driver then falls back to the R100 PCI GART. */
+typedef enum {
+    RLG_BUS_IGP = 0,
+    RLG_BUS_AGP,
+    RLG_BUS_PCIE,
+} RLGBus;
 
 static inline bool rlg_family_is_avivo(RLGFamily f)
 {
@@ -76,8 +97,9 @@ typedef struct {
     uint32_t nominal_core_mhz;
     const char *ps_profile;     /* D3D pixel shader profile exposed by the driver */
     bool hw_tcl;                /* false: vertex shading runs on the CPU (driver) */
-    uint8_t pixel_pipes;
-    bool integrated;
+    uint8_t pixel_pipes;        /* nominal */
+    RLGBus bus;
+    bool r4xx;                  /* R420/RV410 class: exposes R400_GB_PIPE_SELECT */
     bool mobile;
 } RLGChipInfo;
 
@@ -114,7 +136,16 @@ typedef struct {
     uint64_t faults;
 } RLGCPState;
 
+typedef enum {
+    RLG_GART_NONE = 0,
+    RLG_GART_RS400,     /* RS480/RS690 IGP GART, table in system memory */
+    RLG_GART_RS600,     /* flat 64-bit table in VRAM */
+    RLG_GART_PCIE,      /* RV370 PCIe GART, table in VRAM */
+    RLG_GART_PCI,       /* R100 PCI GART (AIC_*), table in system memory */
+} RLGGARTKind;
+
 typedef struct {
+    RLGGARTKind kind;
     uint64_t table_base;
     uint64_t aperture_base;
     uint64_t aperture_size;
@@ -190,6 +221,8 @@ const RLGChipInfo *rlg_chip_info(RLGProfile profile);
 /* Returns false and leaves *out untouched for an unknown name. */
 bool rlg_profile_parse(const char *name, RLGProfile *out);
 RLGProfile rlg_profile_from_name(const char *name);
+/* Human-readable list of the canonical model= names. */
+const char *rlg_profile_models(void);
 const char *rlg_profile_name(RLGProfile profile);
 
 RLGDevice *rlg_create(const RLGConfig *cfg);

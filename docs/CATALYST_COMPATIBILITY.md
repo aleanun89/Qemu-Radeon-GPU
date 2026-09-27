@@ -37,16 +37,25 @@ Añade trazas propias de:
 - `GEN_INT_STATUS`/`GEN_INT_CNTL`, `DxMODE_INT_MASK` y `DISP_INTERRUPT_STATUS`;
 - `gart.faults` y `cp.faults`.
 
-## X300 / X700
+## Dedicadas (9550, X300, X550, X600, X700, X850)
 
-- **Máquina:** usa `-machine q35`. Sin bus PCIe, `radeon` no selecciona el
-  PCIe GART.
-- **BIOS:** depende de la tarjeta.
-  - X300 (RV370): VBIOS clásica (**COMBIOS**, código x86).
-  - X700 (RV410): puede ser **AtomBIOS**. La X700 PRO `1002:5E4B`,
-    P/N 113-A37910-103, lo es.
+- **Máquina:**
+  - Tarjetas PCIe: `-machine q35` reproduce el camino real (PCIe GART). En
+    `-machine pc` funcionan como PCI con el GART PCI de la R100.
+  - Tarjetas AGP (9550, X850 XT AGP): QEMU no tiene AGP, así que siempre van
+    como PCI. `radeon` lo soporta. Catalyst para XP también instala en tarjetas
+    AGP sin puente AGP, pero sin AGP no hay transferencias rápidas, y alguna
+    versión podría comprobar el bus.
+- **BIOS:** según las ROM analizadas, las R3xx llevan **COMBIOS** (código x86)
+  y las R4xx llevan **AtomBIOS**:
+
+  | BIOS | Tarjetas |
+  |---|---|
+  | COMBIOS | 9550, X300, X300 SE, Mobility X300, X600 XT |
+  | AtomBIOS | X550 XTX, X700 PRO, X850 XT, X850 XT AGP |
 
   El driver la necesita en ambos casos para conectores y relojes.
+  `tools/romid.py` indica el tipo de cada ROM.
 - **Hito propio:** después del `ib test`, el siguiente paso de r300g en estas
   tarjetas es subir programas de vertex shader (TCL por hardware). Esos
   programas llegan al CP como escrituras a los registros `VAP_PVS_*`, que hoy

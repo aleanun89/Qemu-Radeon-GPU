@@ -112,7 +112,7 @@ void rlg_reset(RLGDevice *d)
     fb_loc = ((d->vram_size - 1u) >> 16) << 16;
     switch (d->chip->family) {
     case RLG_FAMILY_RS400:
-    case RLG_FAMILY_R300_PCIE:
+    case RLG_FAMILY_R300:
         rlg_reg_write32(d, RLG_MC_FB_LOCATION, fb_loc);
         break;
     case RLG_FAMILY_RS600:
@@ -123,6 +123,11 @@ void rlg_reset(RLGDevice *d)
         d->mc_regs[RLG_RS690_MCCFG_FB_LOCATION] = fb_loc;
         d->mc_regs[RLG_RS690_MC_SYSTEM_STATUS] = 0x1u;  /* idle */
         break;
+    }
+    if (d->chip->r4xx) {
+        /* r420_pipes_init(): num_pipes = ((GB_PIPE_SELECT >> 12) & 3) + 1 quads. */
+        unsigned quads = d->chip->pixel_pipes >= 4 ? d->chip->pixel_pipes / 4u : 1u;
+        rlg_reg_write32(d, RLG_GB_PIPE_SELECT, ((quads - 1u) & 3u) << 12);
     }
     rlg_reg_write32(d, RLG_CNFG_MEMSIZE, d->vram_size);
     rlg_reg_write32(d, RLG_MC_STATUS, 5);

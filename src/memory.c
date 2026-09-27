@@ -80,6 +80,7 @@ void rlg__gart_update(RLGDevice *d)
     if (d->chip->family == RLG_FAMILY_RS600) {
         uint32_t start = d->mc_regs[RLG_RS600_MC_PT0_FLAT_START_ADDR];
         uint32_t end = d->mc_regs[RLG_RS600_MC_PT0_FLAT_END_ADDR];
+        g->kind = RLG_GART_RS600;
         g->enabled = (d->mc_regs[RLG_RS600_MC_CNTL1] & (1u << 26)) &&
                      (d->mc_regs[RLG_RS600_MC_PT0_CNTL] & 1u) && end > start;
         g->table_base = d->mc_regs[RLG_RS600_MC_PT0_FLAT_BASE_ADDR];
@@ -88,10 +89,24 @@ void rlg__gart_update(RLGDevice *d)
         return;
     }
 
-    if (d->chip->family == RLG_FAMILY_R300_PCIE) {
-        /* See Linux rv370_pcie_gart_enable(): END_LO is the start of the last page. */
+    if (d->chip->family == RLG_FAMILY_R300) {
+        uint32_t aic = rlg_reg_read32(d, RLG_AIC_CNTL);
+        if (aic & RLG_PCIGART_TRANSLATE_EN) {
+            /* R100 PCI GART (r100_pci_gart_enable): used for AGP parts and for PCIe
+             * parts on a conventional PCI bus. HI_ADDR is the last byte. */
+            uint32_t lo = rlg_reg_read32(d, RLG_AIC_LO_ADDR);
+            uint32_t hi = rlg_reg_read32(d, RLG_AIC_HI_ADDR);
+            g->kind = RLG_GART_PCI;
+            g->enabled = hi > lo;
+            g->table_base = rlg_reg_read32(d, RLG_AIC_PT_BASE) & ~(RLG_PAGE_SIZE - 1u);
+            g->aperture_base = lo;
+            g->aperture_size = hi > lo ? (uint64_t)hi - lo + 1u : 0;
+            return;
+        }
+        /* PCIe GART (rv370_pcie_gart_enable): END_LO is the start of the last page. */
         uint32_t start = d->mc_regs[RLG_PCIE_TX_GART_START_LO];
         uint32_t end = d->mc_regs[RLG_PCIE_TX_GART_END_LO];
+        g->kind = RLG_GART_PCIE;
         g->enabled = (d->mc_regs[RLG_PCIE_TX_GART_CNTL] & RLG_PCIE_TX_GART_EN) && end >= start;
         g->table_base = d->mc_regs[RLG_PCIE_TX_GART_BASE];
         g->aperture_base = start;
@@ -100,6 +115,7 @@ void rlg__gart_update(RLGDevice *d)
     }
 
     /* RS400/RS480/RS690: see Linux rs400_gart_enable(). */
+    g->kind = RLG_GART_RS400;
     uint32_t size_reg = d->mc_regs[RLG_RS480_AGP_ADDRESS_SPACE_SIZE];
     uint32_t base = d->mc_regs[RLG_RS480_GART_BASE];
     uint32_t agp_loc = d->chip->family == RLG_FAMILY_RS690
@@ -129,7 +145,15 @@ int rlg_gart_translate(RLGDevice *d, uint64_t gpu, uint64_t *phys)
     rel = gpu - g->aperture_base;
     page = rel / RLG_PAGE_SIZE;
 
-    if (d->chip->family == RLG_FAMILY_RS600) {
+    if (g->kind == RLG_GART_PCI) {
+        /* r100_pci_gart_get_page_entry(): the entry is the bus address itself. */
+        uint8_t raw[4];
+        if (dma_read(d, g->table_base + page * 4u, raw, 4) != 0) {
+            g->faults++;
+            return -2;
+        }
+        *phys = (uint64_t)(le32(raw) & ~(RLG_PAGE_SIZE - 1u)) + (rel & (RLG_PAGE_SIZE - 1u));
+    } else if (g->kind == RLG_GART_RS600) {
         /* Flat table of 64-bit PTEs, located in VRAM (MC address). */
         uint8_t raw[8];
         uint32_t off;
@@ -145,7 +169,7 @@ int rlg_gart_translate(RLGDevice *d, uint64_t gpu, uint64_t *phys)
             return -3;
         }
         *phys = (pte & 0xfffffffffffff000ull) + (rel & (RLG_PAGE_SIZE - 1u));
-    } else if (d->chip->family == RLG_FAMILY_R300_PCIE) {
+    } else if (g->kind == RLG_GART_PCIE) {
         /* 32-bit PTEs in VRAM: addr[31:12] in 23:4, addr[39:32] in 31:24, flags in 3:0. */
         uint32_t off, pte;
         if (!rlg_mc_to_vram(d, g->table_base + page * 4u, 4, &off)) {

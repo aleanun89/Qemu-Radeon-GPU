@@ -79,16 +79,22 @@ También está `qemu/build_qemu_example.sh /ruta/qemu`.
 ./qemu-system-x86_64 -machine q35 -smp 2,sockets=1,cores=2 -m 2048 -cpu Opteron_G2,vendor=AuthenticAMD,family=15,model=75,stepping=2,model-id="AMD Athlon(tm) 64 X2 Dual Core Processor 3800+",-svm -vga none -device radeon-legacy-vga,model=x700,vgamem_mb=256,bus=pcie.0 -drive file=disk.qcow2
 ```
 
-- **`q35` es obligatorio para el camino correcto.**
-  - El driver `radeon` activa `RADEON_IS_PCIE` solo si `pci_is_pcie()` (ver
-    `radeon_kms.c`). Con ese flag, el RV370/RV410 usa el PCIe GART emulado.
-  - En `-machine pc` el dispositivo queda como PCI convencional: el driver
-    intentaría el GART PCI de la R100, que no está emulado, y QEMU lo avisa.
+- **`q35` es lo recomendado para las tarjetas PCIe.** El driver `radeon` elige
+  el GART según el bus que ve (`radeon_kms.c`):
+
+  | Tarjeta | Máquina | Qué ve el driver | GART usado |
+  |---|---|---|---|
+  | PCIe | `q35` | `RADEON_IS_PCIE` | PCIe GART (como en el hardware real) |
+  | PCIe | `pc` (i440FX) | `RADEON_IS_PCI` | GART PCI de la R100 |
+  | AGP (`r9550`, `x850xt-agp`) | cualquiera | `RADEON_IS_PCI` (QEMU no tiene AGP) | GART PCI de la R100 |
+
+  Los dos GART están emulados. El núcleo usa el que active el driver.
 - **Bus:** `bus=pcie.0` (el bus raíz) mantiene el rango VGA legado accesible.
   Detrás de un `pcie-root-port`, el enrutado VGA depende del bridge.
 - **Windows XP en `q35`:** XP no trae driver AHCI; necesitas integrarlo en la
-  instalación.
-- **Modelos:** `x300`, `x300m`, `x700`, `x700pro`, `x700xt`, `x700m`.
+  instalación, o usar `-machine pc` (la tarjeta funcionará como PCI).
+- **Modelos:** `r9550`, `x300`, `x300se`, `x300m`, `x600xt`, `x550xtx`, `x700`,
+  `x700pro`, `x700xt`, `x700m`, `x850xt`, `x850xt-agp`.
 
 ## 5. BARs
 
@@ -105,7 +111,7 @@ También está `qemu/build_qemu_example.sh /ruta/qemu`.
   - RS690: `MCCFG_FB_LOCATION` (MC `0x100`);
   - RS600: `MC_FB_LOCATION` (MC `0x04`).
 
-  X300/X700: `MC_FB_LOCATION` (MMIO `0x148`), como el RS480.
+  Dedicadas R3xx/R4xx: `MC_FB_LOCATION` (MMIO `0x148`), como el RS480.
 
   Tras un reset vale `0 .. VRAM-1` hasta que el firmware o el driver la programen.
 - **GART RS480/RS690** (Linux `rs400_gart_enable`):
@@ -116,12 +122,19 @@ También está `qemu/build_qemu_example.sh /ruta/qemu`.
 - **GART RS600** (`rs600_gart_enable`):
   - tabla plana de PTE de 64 bits **en VRAM**, en `MC_PT0_CONTEXT0_FLAT_BASE_ADDR`;
   - activa con `MC_CNTL1` bit 26 + `MC_PT0_CNTL` bit 0.
-- **PCIe GART X300/X700** (`rv370_pcie_gart_enable`):
+- **PCIe GART de las dedicadas** (`rv370_pcie_gart_enable`):
   - registros indirectos por `PCIE_INDEX/PCIE_DATA` (`0x30/0x34`):
     `TX_GART_CNTL` (bit 0 = enable), `TX_GART_BASE` (tabla en VRAM),
     `TX_GART_START_LO` y `TX_GART_END_LO` (inicio de la última página);
   - PTE de 32 bits: `addr[31:12]` en bits 23:4, `addr[39:32]` en 31:24,
     READ = bit 3, WRITE = bit 2.
+- **GART PCI de la R100** (`r100_pci_gart_enable`), para AGP y para PCIe en
+  bus PCI:
+  - MMIO `AIC_CNTL` (`0x1D0`, bit 0 = enable), `AIC_PT_BASE` (`0x1D8`, tabla
+    en memoria del sistema), `AIC_LO_ADDR`/`AIC_HI_ADDR` (`0x1DC`/`0x1E0`,
+    `HI` es el último byte);
+  - cada entrada es la dirección de bus de la página, sin flags;
+  - tiene prioridad sobre el PCIe GART mientras `AIC_CNTL` bit 0 está activo.
 - Las lecturas y escrituras de la GPU a memoria del sistema pasan por
   `pci_dma_read`/`pci_dma_write`. Por eso respetan el bit de *bus master* del
   espacio de configuración PCI.
@@ -158,13 +171,29 @@ están modelados (van al almacén genérico de registros).
 ### ROMs locales en `bios/`
 
 La carpeta `bios/` del repositorio está en `.gitignore` (igual que `*.rom`):
-las VBIOS son firmware propietario y **no se suben**. Usa `model=` a juego con
-el PCI ID de la ROM:
+las VBIOS son firmware propietario y **no se suben**.
 
-| ROM | PCI ID | Tipo | Uso |
+Para saber qué `model=` corresponde a cada ROM:
+
+```bash
+python3 tools/romid.py bios/*.rom
+```
+
+ROM probadas con la herramienta (todas con perfil):
+
+| Tarjeta | PCI ID | Tipo | `model=` |
 |---|---|---|---|
-| X300 (RV370), P/N 113-A25902-103 | `1002:5B60` | COMBIOS | `model=x300,romfile=bios/<rom>` |
-| X700 PRO (RV410), P/N 113-A37910-103 | `1002:5E4B` | AtomBIOS | `model=x700pro,romfile=bios/<rom>` |
+| Radeon 9550 (RV350, AGP) | `1002:4153` | COMBIOS | `r9550` |
+| X300 (RV370) | `1002:5B60` | COMBIOS | `x300` |
+| X300 SE (RV370) | `1002:5B62` | COMBIOS | `x300se` |
+| Mobility X300 (RV370/M22) | `1002:5460` | COMBIOS | `x300m` |
+| X600 XT (RV380) | `1002:3E50` | COMBIOS | `x600xt` |
+| X550 XTX (RV410) | `1002:5657` | AtomBIOS | `x550xtx` |
+| X700 PRO (RV410) | `1002:5E4B` | AtomBIOS | `x700pro` |
+| X850 XT (R480, PCIe) | `1002:5D52` | AtomBIOS | `x850xt` |
+| X850 XT AGP (R481) | `1002:4B49` | AtomBIOS | `x850xt-agp` |
+
+Ajusta `vgamem_mb=` a la memoria de la tarjeta; algunas X300 SE tienen 32 MiB.
 
 - **POST:** con una VBIOS real, SeaBIOS ejecuta su código de inicialización.
   Esa BIOS programa el controlador de memoria y los PLL, y **sondea registros
