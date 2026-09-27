@@ -1,5 +1,37 @@
 # Cambios
 
+## Motor 3D R300/R400 (renderizador de referencia por software)
+
+Referencia: driver r300 de Mesa 26.2.3 (`src/gallium/drivers/r300`,
+`compiler/r300_fragprog_emit.c`, `r300_fragprog_swizzle.c`,
+`r3xx_vertprog.c`, `r300_emit.c`, `r300_render.c`, `r300_state_derived.c`,
+`r300_texture*.c`, `r300_blit.c`).
+
+- **Módulos nuevos:**
+
+  | Fichero | Contenido |
+  |---|---|
+  | `r3d_state.c` | Memoria de PVS y US, banking R400, float24 y half |
+  | `r3d_vertex.c` | Fetch de vértices, intérprete PVS y VTE |
+  | `r3d_fs.c` | Intérprete del US en quads 2×2 |
+  | `r3d_tex.c` | Formatos, layout de mips, filtrado, 3D y cubemaps |
+  | `r3d_raster.c` | Ensamblado, clipping, culling, puntos y líneas, rasterizado, RS y operaciones por fragmento |
+  | `r3d_draw.c` | Paquetes del CP |
+
+- **CP:** `3D_LOAD_VBPNTR`, `3D_DRAW_VBUF_2`, `3D_DRAW_IMMD_2`,
+  `3D_DRAW_INDX_2` e `INDX_BUFFER` se ejecutan (antes solo se contaban).
+- **Caminos de Mesa que requieren soporte explícito:**
+  - clears y blits del blitter: un punto con `GA_POINT_SIZE` y stuffing de
+    coordenadas;
+  - CBZB clear: `ZB_BW_CNTL.CB_CLEAR` escribe `ZB_DEPTHCLEARVALUE` en la mitad
+    inferior del colorbuffer;
+  - TCL bypass en las integradas.
+- **Valores de reset:** `GA_COLOR_CONTROL` (Gouraud, provoking last) y
+  `RB3D_COLOR_CHANNEL_MASK` (todos los canales).
+- **Tests:** `tests/test_3d.c` con 13 grupos. Las mutaciones en CMP, float24,
+  la regla de stride del RS690 y la orientación del culling hacen fallar los
+  tests.
+
 ## Tarjetas de las VBIOS aportadas (9550, X300 SE, X550, X600, X850)
 
 A partir de las ROM de `bios/` (locales, no versionadas):

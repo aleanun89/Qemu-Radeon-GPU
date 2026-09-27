@@ -118,9 +118,100 @@
 #define RLG_WAIT_UNTIL                  0x1720u
 #define RLG_GUI_STAT                    0x1740u
 
-/* ---- MMIO: 3D engine (only what init code reads) -------------------- */
+/* ---- MMIO: 3D engine (R300/R400; Mesa src/gallium/drivers/r300/r300_reg.h) */
+#define RLG_R3D_BASE                    0x1d98u  /* first 3D register we care about */
+#define RLG_SE_VPORT_XSCALE             0x1d98u  /* XSCALE, XOFFSET, YSCALE, YOFFSET, ZSCALE, ZOFFSET */
+#define RLG_VAP_PORT_IDX0               0x2040u  /* index stream port (INDX_BUFFER target) */
+#define RLG_VAP_CNTL                    0x2080u
+#define RLG_DX_CLIP_SPACE_DEF           (1u << 22)
+#define RLG_VAP_VF_CNTL                 0x2084u
+#define RLG_VAP_OUTPUT_VTX_FMT_0        0x2090u
+#define RLG_VAP_OUTPUT_VTX_FMT_1        0x2094u
+#define RLG_VAP_VTE_CNTL                0x20b0u
+#define RLG_VTE_X_SCALE_ENA             (1u << 0)
+#define RLG_VTE_X_OFFSET_ENA            (1u << 1)
+#define RLG_VTE_Y_SCALE_ENA             (1u << 2)
+#define RLG_VTE_Y_OFFSET_ENA            (1u << 3)
+#define RLG_VTE_Z_SCALE_ENA             (1u << 4)
+#define RLG_VTE_Z_OFFSET_ENA            (1u << 5)
+#define RLG_VTX_XY_FMT                  (1u << 8)  /* XY already in screen space */
+#define RLG_VTX_Z_FMT                   (1u << 9)
+#define RLG_VAP_VTX_SIZE                0x20b4u
+#define RLG_VAP_VF_MAX_VTX_INDX         0x2134u
+#define RLG_VAP_VF_MIN_VTX_INDX         0x2138u
+#define RLG_VAP_CNTL_STATUS             0x2140u
+#define RLG_VAP_TCL_BYPASS              (1u << 8)
+#define RLG_VAP_PROG_STREAM_CNTL_0      0x2150u  /* 8 regs, two streams each */
+#define RLG_VAP_PROG_STREAM_CNTL_EXT_0  0x21e0u
+#define RLG_VAP_PVS_VECTOR_INDX_REG     0x2200u
+#define RLG_VAP_PVS_UPLOAD_DATA         0x2208u
+#define RLG_VAP_CLIP_CNTL               0x221cu
+#define RLG_CLIP_DISABLE                (1u << 16)
+#define RLG_VAP_PVS_CODE_CNTL_0         0x22d0u
+#define RLG_VAP_PVS_CONST_CNTL          0x22d4u
+#define RLG_VAP_PVS_FLOW_CNTL_OPC       0x22dcu
+#define RLG_GB_ENABLE                   0x4008u
+#define RLG_GB_POINT_STUFF_ENABLE       (1u << 0)
 #define RLG_GB_TILE_CONFIG              0x4018u
 #define RLG_GB_PIPE_SELECT              0x402cu  /* R4xx: 13:12 = number of quad pipes - 1 */
+#define RLG_TX_ENABLE                   0x4104u
+#define RLG_GA_POINT_S0                 0x4200u  /* S0, T0, S1, T1 (floats) */
+#define RLG_GA_POINT_SIZE               0x421cu  /* Y size*6 in 15:0, X size*6 in 31:16 */
+#define RLG_GA_COLOR_CONTROL            0x4278u
+#define RLG_SU_CULL_MODE                0x42b8u
+#define RLG_CULL_FRONT                  (1u << 0)
+#define RLG_CULL_BACK                   (1u << 1)
+#define RLG_FRONT_FACE_CW               (1u << 2)
+#define RLG_RS_COUNT                    0x4300u
+#define RLG_RS_INST_COUNT               0x4304u
+#define RLG_RS_IP_0                     0x4310u
+#define RLG_RS_INST_0                   0x4330u
+#define RLG_SC_CLIPRECT_TL_0            0x43b0u
+#define RLG_SC_CLIPRECT_BR_0            0x43b4u
+#define RLG_SC_CLIP_RULE                0x43d0u
+#define RLG_SC_SCISSORS_TL              0x43e0u
+#define RLG_SC_SCISSORS_BR              0x43e4u
+#define RLG_CLIPRECT_OFFSET             1440     /* R300-R400 cliprect/scissor bias */
+#define RLG_TX_FILTER0_0                0x4400u
+#define RLG_TX_FILTER1_0                0x4440u
+#define RLG_TX_FORMAT0_0                0x4480u
+#define RLG_TX_FORMAT1_0                0x44c0u
+#define RLG_TX_FORMAT2_0                0x4500u
+#define RLG_TX_OFFSET_0                 0x4540u
+#define RLG_TX_BORDER_COLOR_0           0x45c0u
+#define RLG_US_CONFIG                   0x4600u
+#define RLG_US_PIXSIZE                  0x4604u
+#define RLG_US_CODE_OFFSET              0x4608u
+#define RLG_US_CODE_ADDR_0              0x4610u
+#define RLG_US_TEX_INST_0               0x4620u  /* 32 */
+#define RLG_US_OUT_FMT_0                0x46a4u  /* 4 */
+#define RLG_US_W_FMT                    0x46b4u
+#define RLG_R400_US_CODE_BANK           0x46b8u
+#define RLG_R400_US_CODE_EXT            0x46bcu
+#define RLG_US_ALU_RGB_ADDR_0           0x46c0u  /* 64 each */
+#define RLG_US_ALU_ALPHA_ADDR_0         0x47c0u
+#define RLG_US_ALU_RGB_INST_0           0x48c0u
+#define RLG_US_ALU_ALPHA_INST_0         0x49c0u
+#define RLG_R400_US_ALU_EXT_ADDR_0      0x4ac0u
+#define RLG_FG_ALPHA_FUNC               0x4bd4u
+#define RLG_PFS_PARAM_0                 0x4c00u  /* 32 x vec4 in float24 */
+#define RLG_RB3D_CCTL                   0x4e00u
+#define RLG_RB3D_CBLEND                 0x4e04u
+#define RLG_RB3D_ABLEND                 0x4e08u
+#define RLG_RB3D_COLOR_CHANNEL_MASK     0x4e0cu
+#define RLG_RB3D_BLEND_COLOR            0x4e10u
+#define RLG_RB3D_COLOROFFSET0           0x4e28u
+#define RLG_RB3D_COLORPITCH0            0x4e38u
+#define RLG_ZB_CNTL                     0x4f00u
+#define RLG_ZB_ZSTENCILCNTL             0x4f04u
+#define RLG_ZB_STENCILREFMASK           0x4f08u
+#define RLG_ZB_FORMAT                   0x4f10u
+#define RLG_ZB_BW_CNTL                  0x4f1cu
+#define RLG_ZB_CB_CLEAR_WRITE_ONLY      (1u << 5)  /* CBZB clear: ZB writes DEPTHCLEARVALUE */
+#define RLG_ZB_DEPTHOFFSET              0x4f20u
+#define RLG_ZB_DEPTHPITCH               0x4f24u
+#define RLG_ZB_DEPTHCLEARVALUE          0x4f28u
+#define RLG_R3D_END                     0x5000u
 
 /* ---- MMIO: AVIVO display (RS600/RS690) ------------------------------ */
 #define RLG_AVIVO_BASE                  0x6000u

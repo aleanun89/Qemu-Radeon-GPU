@@ -10,7 +10,8 @@ import shutil
 import sys
 
 CORE_SOURCES = ["chip.c", "device.c", "memory.c", "irq.c", "display.c",
-                "engine2d.c", "cp.c", "mmio.c"]
+                "engine2d.c", "cp.c", "mmio.c", "r3d_state.c", "r3d_vertex.c",
+                "r3d_fs.c", "r3d_tex.c", "r3d_raster.c", "r3d_draw.c"]
 BEGIN = "# BEGIN radeon-legacy-vga\n"
 END = "# END radeon-legacy-vga\n"
 

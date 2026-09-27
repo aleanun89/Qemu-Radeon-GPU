@@ -1,4 +1,4 @@
-#include "radeon_legacy_int.h"
+#include "radeon_r3d.h"
 #include <string.h>
 
 /* ---- MC indirect index/data pairs (one per family) ------------------------ */
@@ -260,7 +260,11 @@ static void w32(RLGDevice *d, uint32_t a, uint32_t v)
     case RLG_CP_IB_BUFSZ: (void)rlg__cp_exec_ib(d, d->cp.ib_base, v & 0x7fffffu); return;
     case RLG_SCRATCH_UMSK: d->cp.scratch_umsk = v; return;
     case RLG_SCRATCH_ADDR: d->cp.scratch_addr = v & ~0x1fu; return;
-    default: update2d(d, a, v); return;
+    default:
+        if (!r3d_reg_write(d, a, v)) {
+            update2d(d, a, v);
+        }
+        return;
     }
 }
 

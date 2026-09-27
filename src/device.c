@@ -1,4 +1,4 @@
-#include "radeon_legacy_int.h"
+#include "radeon_r3d.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +67,14 @@ static RLGDevice *create_common(const RLGConfig *cfg, uint8_t *external, uint32_
         d->vram_size = want;
         d->owns_vram = true;
     }
+    if (r3d_init(d) != 0) {
+        if (d->owns_vram) {
+            free(d->vram);
+        }
+        free(d->regs);
+        free(d);
+        return NULL;
+    }
     rlg_reset(d);
     if (d->cfg.backend == RLG_BACKEND_VULKAN && rlg_host_init(d) != 0) {
         rlg__log(d, "Vulkan unavailable; falling back to software");
@@ -132,6 +140,9 @@ void rlg_reset(RLGDevice *d)
     rlg_reg_write32(d, RLG_CNFG_MEMSIZE, d->vram_size);
     rlg_reg_write32(d, RLG_MC_STATUS, 5);
     rlg_reg_write32(d, RLG_DP_WRITE_MASK, 0xffffffffu);
+    rlg_reg_write32(d, RLG_RB3D_COLOR_CHANNEL_MASK, 0xffffu);
+    rlg_reg_write32(d, RLG_GA_COLOR_CONTROL, 0x3aaaau);  /* Gouraud everywhere, provoking = last */
+    r3d_reset(d);
     rlg__irq_update(d);
 }
 
@@ -141,6 +152,7 @@ void rlg_destroy(RLGDevice *d)
         return;
     }
     rlg_host_destroy(d);
+    r3d_fini(d);
     if (d->owns_vram) {
         free(d->vram);
     }

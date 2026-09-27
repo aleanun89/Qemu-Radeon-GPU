@@ -20,14 +20,15 @@ PCIe 1002:5B60 (X300) / 3E50 (X600 XT) / 5E4D (X700) / 5D52 (X850 XT) ...
 |       ├─ display: CRTC clásico | AVIVO D1 ──> scanout
 |       ├─ IRQ: GEN_INT + AVIVO VBlank + SW_INT      |
 |       ├─ motor 2D ─────────────────────> VRAM      |
+|       ├─ registros 3D ─> PVS/US program memory     |
 |       └─ CP: ring ─> IB ─> PACKET0/1/3             |
 |                 |          |                       |
-|                 |          +──> estado 3D (siguiente fase)
+|                 |          +──> motor 3D r3d_* ──> VRAM / GART
 |                 +──> GART ──> DMA del invitado     |
 +----------------------------------------------------+
         |
-        +--> software 2D (funcional)
-        +--> backend Vulkan (pendiente: R300/R400 FS -> SPIR-V)
+        +--> 2D y 3D por software (referencia, funcional)
+        +--> backend Vulkan (siguiente fase)
 ```
 
 ## Criterio de emulación
@@ -52,21 +53,39 @@ Dentro de la familia R300, cada chip indica además su bus real (AGP o PCIe, que
 decide si el adaptador añade la capability PCI Express) y si es R4xx (valor de
 `GB_PIPE_SELECT`).
 
-Todo lo demás (CP, 2D, parser PM4, futuro backend 3D) es común. Todas las
-familias comparten el núcleo 3D de clase R300/R400. La diferencia está en el
-TCL:
+Todo lo demás (CP, 2D, parser PM4, motor 3D) es común. Todas las familias
+comparten el núcleo 3D de clase R300/R400. La diferencia está en el TCL:
 
-- **Integradas:** sin TCL por hardware, así que el backend recibirá vértices
-  ya transformados.
-- **Dedicadas:** con TCL, así que el backend tendrá que traducir también los
-  vertex shaders (PVS).
+- **Integradas:** sin TCL por hardware. El driver pone `VAP_CNTL_STATUS.TCL_BYPASS`
+  y envía vértices ya transformados, que el VAP coloca en slots fijos (0 =
+  posición, 2-5 = colores, 6-13 = coordenadas de textura).
+- **Dedicadas:** con TCL, así que el PVS ejecuta el vertex shader y sus salidas
+  se empaquetan en orden (posición, tamaño de punto, colores, coordenadas de
+  textura), según `VAP_OUTPUT_VTX_FMT_0/1`.
 
-## Siguiente fase: 3D
+## Motor 3D (`src/r3d_*.c`, `include/radeon_r3d.h`)
 
 ```text
-PM4 3D_DRAW_* / registros R300 (0x2000-0x4fff)
-  -> snapshot de estado (GA/SU/SC/RS/US/TX/RB3D/ZB)
-  -> microcódigo US (fragment) -> IR -> SPIR-V (caché por hash)
-  -> VkPipeline (dynamic state) + caché de superficies VRAM <-> VkImage
-  -> vkCmdDraw
+CP PACKET3 3D_DRAW_*_2 / LOAD_VBPNTR / INDX_BUFFER        r3d_draw.c
+  └─ por vértice: fetch (PROG_STREAM_CNTL) ─> PVS o bypass  r3d_vertex.c
+       └─ ensamblado de primitivas, clipping homogéneo,
+          culling, puntos (stuffing), líneas                 r3d_raster.c
+            └─ VTE (divide + viewport) ─> quads 2x2 con regla top-left
+                 └─ RS: interpoladores ─> temporales del FS
+                      └─ US: programa de fragmentos (quad)   r3d_fs.c
+                           └─ TX: sampling con LOD por quad  r3d_tex.c
+                 └─ FG alpha test ─> ZB depth/stencil ─> RB3D blend ─> VRAM
 ```
+
+- **Registros:**
+  - el estado 3D vive en el almacén de registros normal;
+  - solo tienen efectos laterales la memoria del PVS (`VAP_PVS_VECTOR_INDX_REG`
+    / `UPLOAD_DATA`), la memoria del US con banking R400 (`US_ALU_*`,
+    `US_TEX_INST`, `R400_US_CODE_BANK`) y el puerto de índices
+    `VAP_PORT_IDX0` (`r3d_state.c`).
+- **Programa de fragmentos:** se decodifica una vez por draw (`r3d_fs_build`) y
+  se ejecuta en quads 2×2, de modo que las instrucciones TEX calculan el LOD
+  con derivadas reales, igual que el hardware.
+- **Siguiente fase, backend Vulkan:** el mismo estado decodificado se traducirá
+  a SPIR-V (US y PVS) y pipelines con caché. El renderizador por software sirve
+  como referencia para comparar píxel a píxel.

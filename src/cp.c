@@ -1,4 +1,5 @@
-#include "radeon_legacy_int.h"
+#include "radeon_r3d.h"
+#include <stdlib.h>
 
 /*
  * R100-R500 command processor: primary ring + one level of indirect buffers
@@ -96,24 +97,39 @@ static int exec_stream(RLGDevice *d, Stream *st, uint32_t budget)
         case 2:
             break;
         case 3: {
-            uint32_t op = RLG_PM4_PKT3_OPCODE(h);
+            uint32_t op = RLG_PM4_PKT3_OPCODE(h), local[64], *payload = local;
+            bool is3d = is_3d_draw(op) || op == RLG_PM4_3D_LOAD_VBPNTR || op == RLG_PM4_INDX_BUFFER;
             count = RLG_PM4_COUNT(h);
             if (count > stream_avail(d, st)) {
                 st->pos = start;
                 return 0;
             }
-            if (is_3d_draw(op)) {
-                d->cp.draw_calls++;         /* TODO: hand state + vertices to the 3D backend */
-            } else if (op != RLG_PM4_NOP && op != RLG_PM4_WAIT_FOR_IDLE &&
-                       op != RLG_PM4_3D_LOAD_VBPNTR && op != RLG_PM4_INDX_BUFFER &&
-                       op != RLG_PM4_3D_CLEAR_ZMASK) {
-                d->cp.unknown_packets++;
-                rlg__log(d, "CP: unhandled PACKET3 opcode 0x%02x (%u dwords)", op, count);
+            if (is3d && count > 64 && !(payload = malloc(count * sizeof(uint32_t)))) {
+                goto fault;
             }
             for (uint32_t i = 0; i < count; ++i) {
                 if (stream_read(d, st, &v) != 0) {
+                    if (payload != local) {
+                        free(payload);
+                    }
                     goto fault;
                 }
+                if (is3d) {
+                    payload[i] = v;
+                }
+            }
+            if (is3d) {
+                if (is_3d_draw(op)) {
+                    d->cp.draw_calls++;
+                }
+                r3d_packet3(d, op, payload, count);
+                if (payload != local) {
+                    free(payload);
+                }
+            } else if (op != RLG_PM4_NOP && op != RLG_PM4_WAIT_FOR_IDLE &&
+                       op != RLG_PM4_3D_CLEAR_ZMASK) {
+                d->cp.unknown_packets++;
+                rlg__log(d, "CP: unhandled PACKET3 opcode 0x%02x (%u dwords)", op, count);
             }
             break;
         }

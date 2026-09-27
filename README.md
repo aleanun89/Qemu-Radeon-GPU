@@ -122,6 +122,41 @@ se suben al repositorio.
 - Backend Vulkan opcional (solo inicialización: instancia, dispositivo, cola y
   command pool).
 
+### Motor 3D R300/R400 (`src/r3d_*.c`)
+
+Es un renderizador de referencia por software que ejecuta el pipeline del
+hardware sobre la VRAM emulada. Todas las codificaciones siguen el driver r300
+de Mesa (`src/gallium/drivers/r300` y su `compiler/`).
+
+| Bloque | Implementado |
+|---|---|
+| **CP** | `3D_LOAD_VBPNTR`, `3D_DRAW_VBUF_2`, `3D_DRAW_IMMD_2`, `3D_DRAW_INDX_2` (índices inline, por `INDX_BUFFER` o por `VAP_PORT_IDX0`) |
+| **VAP** | `PROG_STREAM_CNTL/_EXT` (FLOAT_1-4, BYTE, D3DCOLOR, SHORT_2/4, FLT16_2/4, signed/normalized, swizzles, write mask); modo TCL y modo bypass (IGP/SW TCL) |
+| **PVS** (vertex shaders) | Intérprete completo de VE_* y ME_* (MAD, DP4, DST, SGE/SLT, CMP, FRC, ARL, EXP/LOG, EX2/LG2, RCP/RSQ, POW, SIN/COS, macro MADD); direccionamiento relativo por A0; subida por `PVS_VECTOR_INDX`/`UPLOAD_DATA`; constantes con base offset |
+| **VTE / GA / SU** | División de perspectiva, viewport `SE_VPORT_*`, clipping homogéneo (w, near, far; espacio GL o DX), culling, flat/Gouraud con provoking vertex; triángulos, strips, fans, quads, quad strips, polígonos, líneas y puntos |
+| **Puntos** | `GA_POINT_SIZE` y stuffing de coordenadas (`GB_ENABLE`, `GA_POINT_S0..T1`). Es el camino que usa el blitter de Mesa para clears y copias |
+| **SC / RS** | Rasterizado en quads 2×2 con regla top-left; scissor y cliprects con `SC_CLIP_RULE`; interpoladores `RS_IP`/`RS_INST` con corrección de perspectiva hacia los temporales del FS |
+| **US** (fragment shaders) | Pares RGB/Alpha, 3 fuentes con constantes float24, swizzles nativos, presub, MAD/DP3/DP4/D2A/MIN/MAX/CND/CMP/FRC/REPL_ALPHA, EX2/LG2/RCP/RSQ, output modifiers y clamp, escritura de profundidad; nodos de indirección; TEX/TXP/TXB/KIL; banking R400 (modo r390, 512 ALU) |
+| **TX** (texturas) | Formatos R300/R400: 8-32 bpp, 565/1555/4444/2101010, 16F/32F, DXT1/3/5, con signo y sRGB. Swizzle por canal, 7 wrap modes, nearest/bilinear, mip nearest/linear con LOD por derivadas del quad, LOD bias, 3D y cubemaps. Layout de mips idéntico a `r300_texture_desc.c` (incluida la alineación del RS690) |
+| **FG / ZB / RB3D** | Alpha test; Z de 16 y 24 bits; stencil de 8 bits a doble cara; blending con los 15 factores y 8 funciones; blend color; máscara de canales; formatos ARGB8888/1555/4444, RGB565, I8, UV88, ARGB16161616 (unorm/fp16) y ARGB32323232; varios render targets; `US_OUT_FMT`; CBZB clear |
+
+**Superficies:** se guardan en lineal aunque tengan activados los bits de
+tiling. Es coherente porque la CPU solo ve las superficies tiled a través de
+los surface registers (que las presentan en lineal) y todos los demás accesos
+pasan por esta GPU emulada.
+
+**Validación** (`tests/test_3d.c`): los tests generan comandos como r300g y
+comprueban píxeles contra valores calculados a mano. Entre otros:
+- ALU contra aritmética exacta;
+- offsets de mips contra las reglas de Mesa aplicadas a mano;
+- clear del blitter con cliprect;
+- CBZB clear;
+- depth, stencil y blending;
+- VBO con PVS.
+
+Además, mutaciones deliberadas en CMP, float24, la regla del RS690 y la
+orientación del culling hacen fallar los tests.
+
 ### Adaptador QEMU (`qemu/overlay/`)
 
 - Dispositivo `radeon-legacy-vga`.
@@ -137,11 +172,27 @@ se suben al repositorio.
 - DMA con `pci_dma_*`, INTx, VBlank a 60 Hz y log de lo no implementado con
   `-d unimp`.
 
-## Lo que falta (no esperes Catalyst 3D todavía)
+## Lo que falta
 
-- Traducción de estado R300/R400 y del microcódigo de fragment shader a SPIR-V.
-  Las dedicadas necesitan además traducir los vertex shaders (PVS).
-- Texturas, render targets y la caché de superficies VRAM ↔ Vulkan.
+- **Backend Vulkan del 3D:** traducir el mismo estado decodificado a pipelines
+  y SPIR-V (US y PVS), con caché de superficies VRAM ↔ `VkImage`. El
+  renderizador por software servirá de referencia para compararlo píxel a
+  píxel.
+- **Rendimiento del 3D por software:** el rasterizado es por píxel y se ejecuta
+  en el hilo de la vCPU. Es correcto, pero lento para juegos.
+- **Aspectos del 3D sin implementar:**
+  - control de flujo del PVS (loops/jumps de `PVS_FLOW_CNTL`, se ejecuta en
+    lineal);
+  - predicación;
+  - HyperZ (ZMASK/HiZ; Mesa solo lo activa en R300-R400 con
+    `RADEON_HYPERZ=1`);
+  - MSAA, polygon offset y stipple;
+  - filtrado anisotrópico (se hace bilineal);
+  - formatos YUV, CxV8U8, ATI2N y W24_FP;
+  - Shader Model 3 y R500 (X1300 y posteriores).
+- **Pendiente de confirmar con hardware real:** la orientación de
+  `SU_CULL_MODE` (se toma CCW como visto en pantalla con y hacia abajo) y la
+  semántica exacta de D2A.
 - POST con VBIOS real: el código de la BIOS inicializa memoria y PLL y sondea
   registros de estado que todavía no se modelan (ver
   `docs/QEMU_INTEGRATION.md`). No se incluye ninguna VBIOS.
@@ -165,7 +216,7 @@ Sin CMake ni compilador de C instalados (por ejemplo, en Windows), sirve
 
 ```bash
 python -m pip install --user ziglang
-python -m ziglang cc -std=c11 -Wall -Wextra -Iinclude src/chip.c src/device.c src/memory.c src/irq.c src/display.c src/engine2d.c src/cp.c src/mmio.c src/vulkan.c tests/test_core.c -o test-core.exe
+python -m ziglang cc -std=c11 -Wall -Wextra -Iinclude src/chip.c src/device.c src/memory.c src/irq.c src/display.c src/engine2d.c src/cp.c src/mmio.c src/r3d_state.c src/r3d_vertex.c src/r3d_fs.c src/r3d_tex.c src/r3d_raster.c src/r3d_draw.c src/vulkan.c tests/test_3d.c -o test-3d.exe
 ```
 
 ## Integración QEMU

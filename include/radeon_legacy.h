@@ -214,6 +214,7 @@ typedef struct RLGDevice {
     RLG2DState eng2d;
     RLGCPState cp;
     RLGGARTState gart;
+    struct RLG3D *r3d;          /* 3D engine state (radeon_r3d.h) */
     RLGHost *host;
 } RLGDevice;
 
