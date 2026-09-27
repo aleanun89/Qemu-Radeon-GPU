@@ -202,10 +202,16 @@ completa):
 | Vulkan (fase 1, versión inicial) | 5,25 | 58,5 |
 | Vulkan (fase 1 + staging cacheado y caché de imágenes/samplers) | 0,33 | 935 |
 | Vulkan con lotes, 16 draws por kick del CP | 0,080 | 3.858 |
+| + caché de texturas entre lotes | 0,063 | 4.849 |
 
-Con quads de 64×64 (más parecido a un juego: muchos draws pequeños), el número
-de draws por segundo pasa de ~4.750 con un draw por kick a **~17.500** con 16
-por kick (`bench-3d vulkan 4000 16 64`).
+Con quads de 64×64 (más parecido a un juego: muchos draws pequeños) y 16 draws
+por kick (`bench-3d vulkan 4000 16 64`):
+
+| Versión | draws/s |
+|---|---:|
+| Un draw por kick | ~4.750 |
+| Lotes | ~17.000 |
+| Lotes + caché de texturas | **~25.000** |
 
 Desglose medido de la versión inicial: 3,5 ms eran la lectura desde la CPU del
 buffer de staging, asignado en memoria sin caché, y 0,65 ms la creación y

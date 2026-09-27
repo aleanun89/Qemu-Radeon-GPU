@@ -137,6 +137,23 @@ typedef struct {
 #define BATCH_MAX_DRAWS 256
 #define UBO_SLOT 768                            /* >= sizeof(VKFSUniforms), 256-aligned */
 
+/*
+ * Textures in VRAM persist across batches. An entry keeps a copy of the
+ * texture bytes; it is reused when the description matches and the VRAM still
+ * holds the same bytes, so a hit costs one memcmp and no upload. Textures in
+ * GART memory are uploaded every draw. Entries used by the open batch are never
+ * evicted.
+ */
+typedef struct {
+    ImgKey key;
+    uint64_t base, used;
+    uint32_t voff, span;
+    uint8_t *shadow;
+    VkImg img;
+} TexEntry;
+
+#define TEX_CACHE_MAX 64
+
 typedef struct {
     bool open, bound, zbound, zdirty;
     unsigned draws;
@@ -149,8 +166,6 @@ typedef struct {
     VkImg color, depth;
     VkDeviceSize c_stg, z_stg, s_stg;           /* upload area, reused for read-back */
     int y0, y1;                                 /* dirty rows */
-    VkImg borrowed[IMG_CACHE_MAX];
-    unsigned nborrowed;
 } Batch;
 
 struct RLGHost {
@@ -177,6 +192,9 @@ struct RLGHost {
     SampEntry samps[SAMP_CACHE_MAX];
     unsigned nsamps;
     Batch b;
+    uint64_t batch_id;
+    TexEntry texc[TEX_CACHE_MAX];
+    unsigned ntexc;
     RLGDevice *d;
     VK_INSTANCE_FNS(DECL_FN)
     VK_DEVICE_FNS(DECL_FN)
@@ -427,6 +445,10 @@ void rlg_host_destroy(RLGDevice *d)
         }
         for (unsigned i = 0; i < h->nsamps; ++i) {
             h->vkDestroySampler(h->dev, h->samps[i].samp, NULL);
+        }
+        for (unsigned i = 0; i < h->ntexc; ++i) {
+            img_destroy(h, &h->texc[i].img);
+            free(h->texc[i].shadow);
         }
         buf_destroy(h, &h->staging);
         buf_destroy(h, &h->ubo);
@@ -706,6 +728,24 @@ static bool address_mode(unsigned m, uint32_t border, VkSamplerAddressMode *out,
     default:
         return false;
     }
+}
+
+/* Equality over 64-byte blocks; the C runtime memcmp can be byte-wise and ~5x slower. */
+static bool same_bytes(const uint8_t *a, const uint8_t *b, size_t n)
+{
+    size_t i = 0;
+    for (; i + 64 <= n; i += 64) {
+        uint64_t x[8], y[8], diff = 0;
+        memcpy(x, a + i, 64);
+        memcpy(y, b + i, 64);
+        for (int j = 0; j < 8; ++j) {
+            diff |= x[j] ^ y[j];
+        }
+        if (diff) {
+            return false;
+        }
+    }
+    return memcmp(a + i, b + i, n - i) == 0;
 }
 
 static uint64_t fnv1a(const uint32_t *w, size_t n)
@@ -1092,7 +1132,7 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
     if (b->open) {
         bool ok = b->bound && b->cvoff == cvoff && b->W == W && b->cvk == cvk && b->cf == cf && b->rows > (uint32_t)y1 &&
                   (!use_depth || (b->zbound && b->zvoff == zvoff && b->dfmt == pk.depth_fmt)) &&
-                  b->draws < BATCH_MAX_DRAWS && b->nborrowed + 16 <= IMG_CACHE_MAX - 2 &&
+                  b->draws < BATCH_MAX_DRAWS &&
                   b->stg_at + tex_total <= h->staging.size && b->vbo_at + vsize <= h->vbo.size;
         /* a texture must see what the batch rendered into its memory */
         for (unsigned u = 0; ok && u < 16; ++u) {
@@ -1131,6 +1171,7 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
         h->vkBeginCommandBuffer(h->cmd, &cbi);
         memset(b, 0, sizeof(*b));
         b->open = true;
+        h->batch_id++;
     }
     uint8_t *stg = h->staging.map;
 
@@ -1189,16 +1230,75 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
         }
     }
 
-    /* ---- textures: images and samplers, borrowed until the flush ---- */
+    /* ---- textures: read the levels into staging, then reuse a cached image or upload ---- */
+    VkDeviceSize tex_stg[16];
+    bool tex_upload[16];
     for (unsigned u = 0; u < 16; ++u) {
         if (!(fsi.tex_units & (1u << u))) continue;
-        uint32_t levels = tinfo[u].levels + 1;
-        if (img_get(h, &tex[u].img, tfmt[u], tinfo[u].w0, tinfo[u].h0, levels,
-                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
-                    tinfo[u].min_level < levels ? tinfo[u].min_level : 0, &tcm[u]) != 0) {
-            return -1;
+        const R3DTexInfo *ti = &tinfo[u];
+        uint32_t levels = ti->levels + 1;
+        uint32_t voff = 0;
+        bool in_vram = rlg_mc_to_vram(d, ti->base, tspan[u], &voff);
+        ImgKey k;
+        memset(&k, 0, sizeof(k));
+        k.fmt = tfmt[u];
+        k.w = ti->w0;
+        k.h = ti->h0;
+        k.levels = levels;
+        k.base = ti->min_level < levels ? ti->min_level : 0;
+        k.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        k.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+        k.swz = tcm[u];
+        TexEntry *e = NULL, *victim = NULL;
+        for (unsigned i = 0; i < h->ntexc && !e; ++i) {
+            TexEntry *c = &h->texc[i];
+            if (c->img.img && c->base == ti->base && !memcmp(&c->key, &k, sizeof(k))) {
+                e = c;
+            } else if (c->used != h->batch_id && (!victim || c->used < victim->used)) {
+                victim = c;                         /* least recently used, not in this batch */
+            }
         }
-        b->borrowed[b->nborrowed++] = tex[u].img;
+        /* same bytes as last upload: nothing to do. Otherwise the image is
+         * rewritten in place; draws recorded earlier read it before the copy. */
+        tex_upload[u] = !(e && in_vram && e->shadow && e->voff == voff && e->span == tspan[u] &&
+                          same_bytes(e->shadow, d->vram + voff, tspan[u]));
+        if (!e) {
+            if (h->ntexc < TEX_CACHE_MAX) {
+                e = &h->texc[h->ntexc++];
+            } else if (!(e = victim)) {
+                return -1;
+            }
+            img_destroy(h, &e->img);
+            free(e->shadow);
+            memset(e, 0, sizeof(*e));
+            if (img_create(h, &e->img, k.fmt, k.w, k.h, levels, k.usage, k.aspect, k.base, &tcm[u]) != 0) {
+                return -1;                          /* the entry stays empty and never matches */
+            }
+            e->key = k;
+            e->base = ti->base;
+        }
+        if (tex_upload[u]) {
+            if (e->span != tspan[u]) {
+                free(e->shadow);
+                e->shadow = NULL;
+                e->span = 0;
+            }
+            if (in_vram && (e->shadow || (e->shadow = malloc(tspan[u])))) {
+                memcpy(e->shadow, d->vram + voff, tspan[u]);
+                e->voff = voff;
+                e->span = tspan[u];
+            }
+            tex_stg[u] = b->stg_at;
+            for (unsigned l = 0; l <= ti->levels; ++l) {
+                uint32_t stride, layer, lo = r3d_tex_level(d, u, l, &stride, &layer);
+                if (rlg_gpu_read(d, (uint64_t)ti->base + lo, stg + b->stg_at, layer) != 0) {
+                    memset(stg + b->stg_at, 0, layer);
+                }
+                b->stg_at += ALIGN16(layer);
+            }
+        }
+        e->used = h->batch_id;
+        tex[u].img = e->img;
         if (!(tex[u].sampler = samp_get(h, &tsci[u]))) {
             return -1;
         }
@@ -1264,20 +1364,19 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
 
     /* ---- record: texture uploads from their r300 layout, then the draw ---- */
     for (unsigned u = 0; u < 16; ++u) {
-        if (!(fsi.tex_units & (1u << u))) continue;
+        if (!(fsi.tex_units & (1u << u)) || !tex_upload[u]) continue;
         const R3DTexInfo *ti = &tinfo[u];
+        VkDeviceSize at = tex_stg[u];
         barrier(h, tex[u].img.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
         for (unsigned l = 0; l <= ti->levels; ++l) {
-            uint32_t stride, layer, lo = r3d_tex_level(d, u, l, &stride, &layer);
+            uint32_t stride, layer;
+            (void)r3d_tex_level(d, u, l, &stride, &layer);
             uint32_t lw = ti->w0 >> l ? ti->w0 >> l : 1, lh = ti->h0 >> l ? ti->h0 >> l : 1;
-            if (rlg_gpu_read(d, (uint64_t)ti->base + lo, stg + b->stg_at, layer) != 0) {
-                memset(stg + b->stg_at, 0, layer);
-            }
-            VkBufferImageCopy tc = { .bufferOffset = b->stg_at,
+            VkBufferImageCopy tc = { .bufferOffset = at,
                 .bufferRowLength = ti->compressed ? stride / ti->bpp * 4 : stride / ti->bpp,
                 .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1 }, .imageExtent = { lw, lh, 1 } };
             h->vkCmdCopyBufferToImage(h->cmd, h->staging.buf, tex[u].img.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &tc);
-            b->stg_at += ALIGN16(layer);
+            at += ALIGN16(layer);
         }
         barrier(h, tex[u].img.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
     }
@@ -1394,9 +1493,6 @@ static int vk_flush(RLGDevice *d)
                 d->cfg.dirty(d->cfg.opaque, (uint32_t)(b->zvoff + first * zb), (uint32_t)(cnt * zb));
             }
         }
-    }
-    for (unsigned i = 0; i < b->nborrowed; ++i) {
-        img_put(h, &b->borrowed[i]);
     }
     img_put(h, &b->color);
     img_put(h, &b->depth);

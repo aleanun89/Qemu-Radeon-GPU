@@ -2,6 +2,18 @@
 
 ## Rendimiento del backend Vulkan
 
+- **Caché de texturas entre lotes:**
+  - la imagen Vulkan de cada textura se conserva, identificada por formato,
+    tamaño, niveles, swizzle y dirección;
+  - para las texturas en VRAM se guarda una copia de sus bytes. Si la VRAM
+    sigue igual no se sube nada; si cambió, se reescribe la misma imagen;
+  - las texturas en GART se suben siempre (sin copia), pero reutilizan la
+    imagen;
+  - la comparación usa bloques de 64 bytes: el `memcmp` del runtime de zig en
+    Windows iba a ~4 GB/s y hacía la caché más lenta que subir la textura;
+  - quads de 64×64 con 16 draws por kick: de ~17.000 a ~25.000 draws/s;
+  - `test_texture` reescribe un texel en VRAM y comprueba que se ve.
+
 - **Staging en memoria `HOST_CACHED`:**
   - el buffer que la CPU relee tras cada draw se asignaba en el primer tipo
     `HOST_VISIBLE|COHERENT`, que en AMD no tiene caché;

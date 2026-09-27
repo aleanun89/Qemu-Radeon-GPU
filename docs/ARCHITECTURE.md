@@ -111,8 +111,10 @@ r3d_vk_draw (vk_backend.c)
   escribir un registro no 3D, en un fallback por software, si una textura solapa
   el target, al cambiar de target o al llegar a 256 draws. El staging que lee la
   CPU está en memoria `HOST_CACHED`, y las imágenes y los samplers se reciclan.
-- **Pendiente:** caché de texturas entre lotes (hoy se suben en cada draw) y
-  sustituir la espera del flush por presentación directa.
+- **Texturas:** caché persistente entre lotes (64 entradas, LRU). Un acierto
+  cuesta una comparación con la copia de los bytes guardada; si el invitado
+  cambió la textura, se vuelve a subir sobre la misma imagen.
+- **Pendiente:** sustituir la espera del flush por presentación directa.
 - **Fase 2:** superficies residentes en la GPU, escritas de vuelta a la VRAM
   solo cuando se leen, lotes de draws sin esperar fence, un hilo worker y el
   PVS traducido a SPIR-V.

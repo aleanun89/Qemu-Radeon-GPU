@@ -414,6 +414,12 @@ static void test_texture(void)
     CHECK(px(24, 8) == 0xff00ff00u);                /* texel (1,0) */
     CHECK(px(24, 24) == 0xff0000ffu);               /* texel (1,1) */
     CHECK(px(56, 40) == 0xff00ff00u);               /* texel (3,2) */
+    /* The guest rewrites a texel: the backend's texture cache must notice. */
+    uint32_t red = 0xffff0000u;
+    memcpy(dev->vram + TEX, &red, 4);
+    draw_immd(13, v, 4, 8);
+    CHECK(px(8, 8) == 0xffff0000u);
+    CHECK(px(24, 8) == 0xff00ff00u);
 }
 
 /* u_blitter clear as Mesa r300 emits it: one point sized to the rectangle,
