@@ -11,40 +11,12 @@
  * sources; texture instructions run at the start of each indirection node.
  */
 
-enum { RGB_MAD = 0, RGB_DP3, RGB_DP4, RGB_D2A, RGB_MIN, RGB_MAX, RGB_CND = 7, RGB_CMP, RGB_FRC,
-       RGB_REPL_ALPHA };
-enum { A_MAD = 0, A_DP4, A_MIN, A_MAX, A_CND = 5, A_CMP, A_FRC, A_EX2, A_LG2, A_RCP, A_RSQ };
-enum { TEX_NOP = 0, TEX_LD, TEX_KIL, TEX_TXP, TEX_TXB };
-
-typedef struct {
-    uint8_t rgb_src[3], a_src[3];       /* bit 6 = constant */
-    uint8_t rgb_arg[3], a_arg[3];       /* bits 0-4 select, 5 negate, 6 abs */
-    uint8_t rgb_op, a_op, rgb_presub, a_presub, rgb_omod, a_omod;
-    bool rgb_clamp, a_clamp;
-    uint8_t rgb_dst, rgb_wmask, rgb_omask, rgb_target;
-    uint8_t a_dst, a_target;
-    bool a_wreg, a_out, a_depth;
-} ALUInst;
-
-typedef struct {
-    uint8_t src, dst, unit, op;
-} TEXInst;
-
-struct R3DFragProg {
-    unsigned nnodes;
-    struct { unsigned alu_start, alu_count, tex_start, tex_count; } node[4];
-    ALUInst alu[R3D_US_ALU_MAX];
-    TEXInst tex[R3D_US_TEX_MAX];
-    float consts[32][4];
-};
-
-#define SRC_CONST 0x40u
 
 static uint8_t decode_src(uint32_t addr, unsigned j, bool ext_msb)
 {
     uint32_t a = (addr >> (6 * j)) & 0x3fu;
     uint8_t idx = (uint8_t)((a & 0x1fu) | (ext_msb ? 0x20u : 0u));
-    return (a & 0x20u) ? (uint8_t)(idx | SRC_CONST) : idx;
+    return (a & 0x20u) ? (uint8_t)(idx | R3D_SRC_CONST) : idx;
 }
 
 R3DFragProg *r3d_fs_build(RLGDevice *d)
@@ -192,7 +164,7 @@ static float omod(float v, unsigned m, bool clamp)
 
 static const float *fetch(const R3DFragProg *p, float t[R3D_MAX_TEMPS][4], uint8_t s)
 {
-    return (s & SRC_CONST) ? p->consts[s & 31u] : t[s & 63u];
+    return (s & R3D_SRC_CONST) ? p->consts[s & 31u] : t[s & 63u];
 }
 
 /* Texture instruction on a 2x2 quad: lanes 0 (x,y), 1 (x+1,y), 2 (x,y+1), 3 (x+1,y+1).

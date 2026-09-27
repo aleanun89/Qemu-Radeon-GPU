@@ -1,5 +1,37 @@
 # Cambios
 
+## Backend Vulkan del 3D (fase 1)
+
+- **Reparto del trabajo:**
+  - la CPU hace el ensamblado, el clipping, el culling y el mapeo RS, que el
+    rasterizador ahora recoge como triángulos en espacio de pantalla
+    (`R3DTri`);
+  - la GPU del host hace el rasterizado, el fragment shader, las texturas, Z,
+    stencil y el blending.
+- **Módulos nuevos:**
+  - `rlg_spirv.c`: generador de SPIR-V 1.6 propio (opcodes comprobados contra
+    SPIRV-Headers);
+  - `vk_shader.c`: traductor US → SPIR-V, idéntico en semántica al intérprete,
+    y vertex shader passthrough;
+  - `vk_backend.c`: carga dinámica de Vulkan, contexto, mapeo de estado,
+    caché de pipelines, subida y bajada de superficies. Sustituye a
+    `vulkan.c`.
+- **Fallback por draw** al software para cualquier estado que no se reproduce
+  con exactitud (estadísticas `vk_draws` y `sw_fallbacks`).
+- **QEMU:**
+  - propiedad `backend=software|vulkan`;
+  - el bloque de meson define `RLG_HAVE_VULKAN` si encuentra
+    `vulkan/vulkan.h`.
+- **Corrección en el software:** DXT devolvía el azul en X. Ahora respeta
+  `R400_DXTC_SWIZZLE_ENABLE`: sin el bit (R300) el rojo va en X. Hay test para
+  R300 y R400. También se corrige que el micro-tiling "square" se perdía al
+  guardarse como `bool`.
+- **Tests:**
+  - `test-3d vulkan` ejecuta toda la batería en la GPU (CTest `3d-vulkan`);
+  - las mutaciones del camino Vulkan hacen fallar los tests;
+  - `tests/bench_3d.c`: 5,25 ms/draw con Vulkan frente a 101,8 ms/draw con
+    software (quad de 640×480, RX 9070 XT).
+
 ## Motor 3D R300/R400 (renderizador de referencia por software)
 
 Referencia: driver r300 de Mesa 26.2.3 (`src/gallium/drivers/r300`,

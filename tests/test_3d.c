@@ -24,6 +24,18 @@ static int failures;
 
 static RLGDevice *dev;
 static uint32_t wptr;
+static bool use_vk;                 /* argv[1] == "vulkan": run everything on the host GPU */
+static uint64_t vk_draws, sw_fallbacks;
+
+static void release(void)
+{
+    if (dev) {
+        vk_draws += dev->r3d->stats.vk_draws;
+        sw_fallbacks += dev->r3d->stats.sw_fallbacks;
+        rlg_destroy(dev);
+        dev = NULL;
+    }
+}
 
 static void w(uint32_t a, uint32_t v) { rlg_mmio_write(dev, a, v, 4); }
 static void wf(uint32_t a, float f) { uint32_t v; memcpy(&v, &f, 4); w(a, v); }
@@ -120,9 +132,14 @@ static void pvs_upload(uint32_t at, const uint32_t *d, unsigned n)
 /* ---- common state -------------------------------------------------------------- */
 static void setup(RLGProfile prof)
 {
-    RLGConfig c = { .profile = prof, .vram_size = 16u << 20 };
-    if (dev) rlg_destroy(dev);
+    RLGConfig c = { .profile = prof, .vram_size = 16u << 20,
+                    .backend = use_vk ? RLG_BACKEND_VULKAN : RLG_BACKEND_SOFTWARE };
+    release();
     dev = rlg_create(&c);
+    if (use_vk && !rlg_host_is_active(dev)) {
+        puts("Vulkan backend unavailable: skipping");
+        exit(77);
+    }
     wptr = 0;
     w(RLG_CP_RB_CNTL, 9 | RLG_RB_NO_UPDATE);        /* 1024-dword ring */
     w(RLG_CP_RB_BASE, FB + RING);
@@ -603,8 +620,48 @@ static void test_cbzb_clear(void)
     w(RLG_ZB_BW_CNTL, 0);
 }
 
-int main(void)
+/* DXT1: red must come out as red on R300 (hardware red in X, Mesa swizzle R=X) and on
+ * R400 with R400_DXTC_SWIZZLE_ENABLE (hardware red in Z, Mesa swizzle R=Z). */
+static uint32_t draw_dxt1(RLGProfile prof, bool r400_swizzle)
 {
+    setup(prof);
+    w(RLG_VAP_CNTL_STATUS, RLG_VAP_TCL_BYPASS);
+    w(RLG_VAP_VTE_CNTL, RLG_VTX_XY_FMT | RLG_VTX_Z_FMT);
+    w(RLG_VAP_OUTPUT_VTX_FMT_0, 1u);
+    w(RLG_VAP_OUTPUT_VTX_FMT_1, 4u);
+    w(RLG_VAP_PROG_STREAM_CNTL_0, 3u | ((3u | (6u << 8) | (1u << 13)) << 16));
+    w(RLG_VAP_PROG_STREAM_CNTL_EXT_0, 0xf688u | (0xf688u << 16));
+    w(RLG_VAP_VTX_SIZE, 8);
+    w(RLG_RS_COUNT, 4u);
+    w(RLG_RS_INST_COUNT, 0);
+    w(RLG_RS_IP_0, (1u << 16) | (2u << 19) | (3u << 22));
+    w(RLG_RS_INST_0, (1u << 3));
+    uint32_t tex = (1u << 6) | (1u << 15);
+    Alu mov = alu_mov_out(1);
+    load_fs(&mov, 1, &tex, 1);
+    const uint8_t blk[8] = { 0x00, 0xf8, 0x1f, 0x00, 0, 0, 0, 0 };  /* c0 = red, c1 = blue, all c0 */
+    memcpy(dev->vram + TEX, blk, 8);
+    w(RLG_TX_ENABLE, 1);
+    w(RLG_TX_FILTER0_0, (1u << 9) | (1u << 11));
+    w(RLG_TX_FILTER1_0, r400_swizzle ? (1u << 21) : 0);
+    w(RLG_TX_FORMAT0_0, 3u | (3u << 11));
+    /* A=W; R/G/B from X/Y/Z (R300) or Z/Y/X (R400 DXTC swizzle), as r300_get_swizzle_combined */
+    uint32_t r = r400_swizzle ? 2u : 0u, b = r400_swizzle ? 0u : 2u;
+    w(RLG_TX_FORMAT1_0, 0xfu | (3u << 9) | (r << 12) | (1u << 15) | (b << 18));
+    w(RLG_TX_OFFSET_0, FB + TEX);
+    draw_immd(13, fullscreen, 4, 8);
+    return px(8, 8);
+}
+
+static void test_dxt1(void)
+{
+    CHECK(draw_dxt1(RLG_PROFILE_X300, false) == 0xffff0000u);
+    CHECK(draw_dxt1(RLG_PROFILE_X700, true) == 0xffff0000u);
+}
+
+int main(int argc, char **argv)
+{
+    use_vk = argc > 1 && !strcmp(argv[1], "vulkan");
     test_float24();
     test_bypass_triangle();
     test_gouraud_quad();
@@ -618,7 +675,12 @@ int main(void)
     test_mipmaps();
     test_cull_stencil();
     test_cbzb_clear();
-    rlg_destroy(dev);
+    test_dxt1();
+    release();
+    if (use_vk) {
+        printf("vulkan: %llu draws on the GPU, %llu software fallbacks\n",
+               (unsigned long long)vk_draws, (unsigned long long)sw_fallbacks);
+    }
     if (failures) {
         fprintf(stderr, "%d 3D check(s) failed\n", failures);
         return 1;

@@ -3,6 +3,7 @@
  * (API usage mirrors hw/display/ati.c of that release).
  */
 #include "qemu/osdep.h"
+#include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -31,6 +32,7 @@ typedef struct RadeonLegacyVGAState {
     RLGDevice *core;
     QEMUTimer vblank_timer;
     char *model;
+    char *backend;              /* "software" (default) or "vulkan" */
     uint64_t linear_aper_sz;
     bool verbose;
     bool scanout_active;        /* VBE currently driven by the Radeon CRTC */
@@ -241,9 +243,14 @@ static void rlg_qemu_realize(PCIDevice *pdev, Error **errp)
     vga_init(&s->vga, OBJECT(s), pci_address_space(pdev), pci_address_space_io(pdev), true);
     s->vga.con = qemu_graphic_console_create(DEVICE(s), 0, s->vga.hw_ops, &s->vga);
 
+    if (s->backend && strcmp(s->backend, "software") && strcmp(s->backend, "vulkan")) {
+        error_setg(errp, "unknown backend '%s' (software, vulkan)", s->backend);
+        return;
+    }
     cfg = (RLGConfig) {
         .profile = profile,
-        .backend = RLG_BACKEND_SOFTWARE,
+        .backend = (s->backend && !strcmp(s->backend, "vulkan")) ? RLG_BACKEND_VULKAN
+                                                                 : RLG_BACKEND_SOFTWARE,
         .vram_size = s->vga.vram_size,
         .verbose = s->verbose,
         .opaque = s,
@@ -257,6 +264,9 @@ static void rlg_qemu_realize(PCIDevice *pdev, Error **errp)
     if (!s->core) {
         error_setg(errp, "failed to create Radeon legacy core");
         return;
+    }
+    if (cfg.backend == RLG_BACKEND_VULKAN && !rlg_host_is_active(s->core)) {
+        warn_report("radeon-legacy-vga: Vulkan backend unavailable, using software 3D");
     }
 
     memory_region_init_io(&s->mmio, OBJECT(s), &rlg_qemu_mmio_ops, s,
@@ -290,6 +300,7 @@ static void rlg_qemu_exit(PCIDevice *pdev)
 
 static const Property rlg_qemu_properties[] = {
     DEFINE_PROP_STRING("model", RadeonLegacyVGAState, model),
+    DEFINE_PROP_STRING("backend", RadeonLegacyVGAState, backend),
     DEFINE_PROP_UINT32("vgamem_mb", RadeonLegacyVGAState, vga.vram_size_mb, 0),
     DEFINE_PROP_UINT64("x-linear-aper-size", RadeonLegacyVGAState, linear_aper_sz, 0),
     DEFINE_PROP_BOOL("verbose", RadeonLegacyVGAState, verbose, false),

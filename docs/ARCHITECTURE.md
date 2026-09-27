@@ -86,6 +86,26 @@ CP PACKET3 3D_DRAW_*_2 / LOAD_VBPNTR / INDX_BUFFER        r3d_draw.c
 - **Programa de fragmentos:** se decodifica una vez por draw (`r3d_fs_build`) y
   se ejecuta en quads 2×2, de modo que las instrucciones TEX calculan el LOD
   con derivadas reales, igual que el hardware.
-- **Siguiente fase, backend Vulkan:** el mismo estado decodificado se traducirá
-  a SPIR-V (US y PVS) y pipelines con caché. El renderizador por software sirve
-  como referencia para comparar píxel a píxel.
+## Backend Vulkan
+
+```text
+r3d_draw_prims ──> triángulos recogidos (R3DTri, ya recortados y en pantalla)
+                     │
+                     ├─ r3d_vk_draw() == 0 ──> hecho en la GPU del host
+                     └─ < 0 (estado no soportado) ──> scan_triangle() por software
+
+r3d_vk_draw (vk_backend.c)
+  1. comprobar y mapear estado: formato de CB + US_OUT_FMT, blend, Z/stencil,
+     texturas (formato, swizzle, wrap, filtros), scissor/cliprect
+  2. vk_fs_translate (vk_shader.c) ──> SPIR-V ──> VkPipeline (caché por clave)
+  3. subir: filas afectadas de CB/ZB y niveles de textura desde la VRAM
+  4. vértices: posición en NDC·w + salidas RS como varyings
+  5. dynamic rendering, draw, copiar de vuelta a la VRAM (+ dirty)
+```
+
+- **Loader:** Vulkan se carga en tiempo de ejecución; basta con las
+  cabeceras.
+- **Fase 1:** sincroniza en cada draw.
+- **Fase 2:** superficies residentes en la GPU, escritas de vuelta a la VRAM
+  solo cuando se leen, lotes de draws sin esperar fence, un hilo worker y el
+  PVS traducido a SPIR-V.

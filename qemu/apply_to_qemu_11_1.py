@@ -11,7 +11,8 @@ import sys
 
 CORE_SOURCES = ["chip.c", "device.c", "memory.c", "irq.c", "display.c",
                 "engine2d.c", "cp.c", "mmio.c", "r3d_state.c", "r3d_vertex.c",
-                "r3d_fs.c", "r3d_tex.c", "r3d_raster.c", "r3d_draw.c"]
+                "r3d_fs.c", "r3d_tex.c", "r3d_raster.c", "r3d_draw.c",
+                "rlg_spirv.c", "vk_shader.c", "vk_backend.c"]
 BEGIN = "# BEGIN radeon-legacy-vga\n"
 END = "# END radeon-legacy-vga\n"
 
@@ -60,10 +61,18 @@ def main() -> int:
     mp = dst_dir / "meson.build"
     m = mp.read_text(encoding="utf-8")
     files = ["radeon-legacy-vga.c"] + ["radeon_legacy/" + s for s in CORE_SOURCES]
+    # The Vulkan backend loads the loader at run time; it only needs the headers.
     block = (BEGIN +
-             "system_ss.add(when: 'CONFIG_RADEON_LEGACY_VGA', if_true: [files(\n" +
-             "".join("  '%s',\n" % f for f in files) +
-             "), pixman])\n" + END)
+             "radeon_legacy_args = []\n"
+             "if cc.has_header('vulkan/vulkan.h')\n"
+             "  radeon_legacy_args += ['-DRLG_HAVE_VULKAN=1']\n"
+             "endif\n"
+             "radeon_legacy_dl = cc.find_library('dl', required: false)\n"
+             "system_ss.add(when: 'CONFIG_RADEON_LEGACY_VGA', if_true: [declare_dependency(\n"
+             "  compile_args: radeon_legacy_args, dependencies: radeon_legacy_dl,\n"
+             "  sources: files(\n" +
+             "".join("    '%s',\n" % f for f in files) +
+             "  )), pixman])\n" + END)
     # Drop any previous copy (marked, or the unmarked block written by v3).
     m = re.sub(re.escape(BEGIN) + r".*?" + re.escape(END), "", m, flags=re.S)
     m = re.sub(r"system_ss\.add\(when: 'CONFIG_RADEON_LEGACY_VGA'.*?\), pixman\]\)\n\n?",

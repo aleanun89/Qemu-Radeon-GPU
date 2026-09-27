@@ -20,7 +20,9 @@ typedef struct {
     unsigned fmt, bpp;          /* bytes per texel, or per 4x4 block when compressed */
     bool compressed;
     unsigned w0, h0, d0, levels, min_level, target;  /* target: 0 2D, 1 3D, 2 cube */
-    bool pitch_en, macro, micro;
+    bool pitch_en, macro;
+    unsigned micro;
+    uint32_t filter1;
     unsigned pitch_texels;
     uint32_t base;
 } TexDesc;
@@ -79,6 +81,7 @@ static void tex_desc(const RLGDevice *d, unsigned u, TexDesc *t)
     t->macro = (off >> 2) & 1u;
     t->micro = (off >> 3) & 3u;
     t->base = off & ~0x1fu;
+    t->filter1 = rlg_reg_read32(d, RLG_TX_FILTER1_0 + u * 4u);
 }
 
 /* Byte offset, stride and size of one level (Mesa r300_setup_miptree). */
@@ -141,7 +144,8 @@ static void rgb565(uint16_t c, float o[3])
     o[0] = unorm(c & 31u, 5); o[1] = unorm((c >> 5) & 63u, 6); o[2] = unorm(c >> 11, 5);
 }
 
-/* DXT: returns X/Y/Z/W in the same layout as W8Z8Y8X8 (X = blue). */
+/* DXT: returns blue in X and red in Z (the layout with R400_DXTC_SWIZZLE_ENABLE);
+ * the caller swaps X/Z when the bit is clear (R300 delivers red in X). */
 static void dxt_texel(unsigned fmt, const uint8_t *blk, unsigned px, unsigned py, float xyzw[4])
 {
     const uint8_t *cb = fmt == F_DXT1 ? blk : blk + 8;
@@ -270,6 +274,7 @@ typedef struct {
     unsigned w, h;
     uint32_t fmt1, border;
     unsigned wrap_s, wrap_t;
+    bool dxtc_swizzle;          /* TX_FILTER1.R400_DXTC_SWIZZLE_ENABLE */
 } LevelCtx;
 
 static void fetch_texel(RLGDevice *d, const LevelCtx *L, int x, int y, unsigned slice, float o[4])
@@ -290,6 +295,11 @@ static void fetch_texel(RLGDevice *d, const LevelCtx *L, int x, int y, unsigned 
             memset(buf, 0, sizeof(buf));
         }
         dxt_texel(t->fmt, buf, (unsigned)xx & 3u, (unsigned)yy & 3u, raw);
+        if (!L->dxtc_swizzle) {
+            float tmp = raw[0];
+            raw[0] = raw[2];
+            raw[2] = tmp;
+        }
     } else {
         uint64_t a = (uint64_t)t->base + L->level_base + (uint64_t)slice * L->layer +
                      (uint64_t)yy * L->stride + (uint64_t)xx * t->bpp;
@@ -321,8 +331,10 @@ static void sample_level(RLGDevice *d, const TexDesc *t, unsigned level, unsigne
                          float s, float tc, bool linear, uint32_t fmt1, uint32_t filter0,
                          uint32_t border, float o[4])
 {
+    uint32_t filter1 = t->filter1;
     LevelCtx L = { .t = t, .fmt1 = fmt1, .border = border,
-                   .wrap_s = filter0 & 7u, .wrap_t = (filter0 >> 3) & 7u };
+                   .wrap_s = filter0 & 7u, .wrap_t = (filter0 >> 3) & 7u,
+                   .dxtc_swizzle = (filter1 >> 21) & 1u };
     L.level_base = level_layout(d, t, level, &L.stride, &L.layer);
     L.w = minify(t->w0, level);
     L.h = minify(t->h0, level);
@@ -432,4 +444,32 @@ float r3d_tex_lod(RLGDevice *d, unsigned unit, const float dx[2], const float dy
     float uy = dy[0] * (float)t.w0, vy = dy[1] * (float)t.h0;
     float rho = fmaxf(sqrtf(ux * ux + vx * vx), sqrtf(uy * uy + vy * vy));
     return rho > 0.0f ? log2f(rho) : -16.0f;
+}
+
+void r3d_tex_info(RLGDevice *d, unsigned unit, R3DTexInfo *out)
+{
+    TexDesc t;
+    tex_desc(d, unit & 15u, &t);
+    out->fmt = t.fmt;
+    out->bpp = t.bpp;
+    out->compressed = t.compressed;
+    out->w0 = t.w0;
+    out->h0 = t.h0;
+    out->d0 = t.d0;
+    out->levels = t.levels;
+    out->min_level = t.min_level;
+    out->target = t.target;
+    out->base = t.base;
+    out->fmt1 = rlg_reg_read32(d, RLG_TX_FORMAT1_0 + (unit & 15u) * 4u);
+    out->filter0 = rlg_reg_read32(d, RLG_TX_FILTER0_0 + (unit & 15u) * 4u);
+    out->filter1 = t.filter1;
+    out->border = rlg_reg_read32(d, RLG_TX_BORDER_COLOR_0 + (unit & 15u) * 4u);
+}
+
+uint32_t r3d_tex_level(RLGDevice *d, unsigned unit, unsigned level, uint32_t *stride,
+                       uint32_t *layer)
+{
+    TexDesc t;
+    tex_desc(d, unit & 15u, &t);
+    return level_layout(d, &t, level, stride, layer);
 }

@@ -17,14 +17,15 @@ enum {
 /* Per-draw state shared by every primitive. */
 typedef struct {
     RLGDevice *d;
-    R3DFragProg *fp;
+    R3DDrawInfo info;
     bool clip;                          /* clip-space input: clip against near/far/w */
     bool dx_clip;                       /* z in [0, w] instead of [-w, w] */
-    uint32_t fmt0, fmt1;
-    unsigned tex_count[R3D_MAX_TEXCOORD];
-    int sc_x0, sc_y0, sc_x1, sc_y1;     /* scissor, inclusive */
+    uint32_t fmt1;
     uint32_t cull;
     bool is_point;
+    R3DTri *tris;                       /* collect mode (host backend): triangles */
+    unsigned ntris, cap;
+    bool collect_failed;
 } DrawCtx;
 
 /* ---- helpers ------------------------------------------------------------------- */
@@ -315,22 +316,25 @@ typedef struct {
     float color[R3D_MAX_COLORS][4];
 } Interp;
 
-static void rs_fill_temps(const DrawCtx *dc, const Interp *in, float t[R3D_MAX_TEMPS][4])
+void r3d_rs_eval(RLGDevice *d, const R3DDrawInfo *info, const float color[R3D_MAX_COLORS][4],
+                 const float tex[R3D_MAX_TEXCOORD][4], float t[R3D_MAX_TEMPS][4], uint64_t *written)
 {
-    RLGDevice *d = dc->d;
     float comps[64];
     const float *cols[R3D_MAX_COLORS];
     unsigned nc = 0, ncol = 0;
 
     memset(t, 0, sizeof(float) * R3D_MAX_TEMPS * 4);
+    if (written) {
+        *written = 0;
+    }
     for (unsigned i = 0; i < R3D_MAX_TEXCOORD; ++i) {
-        for (unsigned k = 0; k < dc->tex_count[i] && nc < 64; ++k) {
-            comps[nc++] = in->tex[i][k];
+        for (unsigned k = 0; k < info->tex_count[i] && nc < 64; ++k) {
+            comps[nc++] = tex[i][k];
         }
     }
     for (unsigned c = 0; c < R3D_MAX_COLORS; ++c) {
-        if (dc->fmt0 & (2u << c)) {
-            cols[ncol++] = in->color[c];
+        if (info->fmt0 & (2u << c)) {
+            cols[ncol++] = color[c];
         }
     }
     unsigned count = (rlg_reg_read32(d, RLG_RS_INST_COUNT) & 0xfu) + 1;
@@ -340,6 +344,9 @@ static void rs_fill_temps(const DrawCtx *dc, const Interp *in, float t[R3D_MAX_T
             uint32_t ip = rlg_reg_read32(d, RLG_RS_IP_0 + (inst & 7u) * 4u);
             unsigned ptr = ip & 63u;
             float *dst = t[(inst >> 6) & 31u];
+            if (written) {
+                *written |= 1ull << ((inst >> 6) & 31u);
+            }
             for (unsigned c = 0; c < 4; ++c) {
                 unsigned sel = (ip >> (13 + 3 * c)) & 7u;
                 if (sel < 4) {
@@ -355,6 +362,9 @@ static void rs_fill_temps(const DrawCtx *dc, const Interp *in, float t[R3D_MAX_T
             static const float zero[4] = { 0, 0, 0, 0 };
             const float *c = ptr < ncol ? cols[ptr] : zero;
             float *dst = t[(inst >> 17) & 31u];
+            if (written) {
+                *written |= 1ull << ((inst >> 17) & 31u);
+            }
             switch (fmt) {
             case 1: dst[0] = c[0]; dst[1] = c[1]; dst[2] = c[2]; dst[3] = 0.0f; break;
             case 2: dst[0] = c[0]; dst[1] = c[1]; dst[2] = c[2]; dst[3] = 1.0f; break;
@@ -414,10 +424,10 @@ static void shade_quad(DrawCtx *dc, int qx, int qy, const bool cover[4], const f
     memset(out, 0, sizeof(out));
     for (int l = 0; l < 4; ++l) {
         alive[l] = true;
-        rs_fill_temps(dc, &in[l], temps[l]);
+        r3d_rs_eval(d, &dc->info, in[l].color, in[l].tex, temps[l], NULL);
         depth[l] = z[l];
     }
-    r3d_fs_run_quad(d, dc->fp, temps, out, depth, dw, alive);
+    r3d_fs_run_quad(d, dc->info.fp, temps, out, depth, dw, alive);
     for (int l = 0; l < 4; ++l) {
         int x = qx + (l & 1), y = qy + (l >> 1);
         if (!cover[l]) {
@@ -455,37 +465,33 @@ static unsigned color_buffers(RLGDevice *d)
     return multi > 1 ? multi : n;
 }
 
-/* Scan-convert one screen-space triangle (after VTE). */
-static void raster_triangle(DrawCtx *dc, const R3DVertex *v0, const R3DVertex *v1,
-                            const R3DVertex *v2)
+static float tri_area(const R3DVertex *v0, const R3DVertex *v1, const R3DVertex *v2)
+{
+    return (v1->pos[0] - v0->pos[0]) * (v2->pos[1] - v0->pos[1]) -
+           (v2->pos[0] - v0->pos[0]) * (v1->pos[1] - v0->pos[1]);
+}
+
+/* Scan-convert one screen-space triangle (after VTE and culling). */
+static void scan_triangle(DrawCtx *dc, const R3DVertex *v0, const R3DVertex *v1,
+                          const R3DVertex *v2, bool front)
 {
     const R3DVertex *v[3] = { v0, v1, v2 };
-    float area = (v1->pos[0] - v0->pos[0]) * (v2->pos[1] - v0->pos[1]) -
-                 (v2->pos[0] - v0->pos[0]) * (v1->pos[1] - v0->pos[1]);
-    bool ccw, front;
-    unsigned nbuf;
+    float area = tri_area(v0, v1, v2);
+    unsigned nbuf = color_buffers(dc->d);
 
     if (area == 0.0f || !isfinite(area)) {
         return;
     }
-    /* In the y-down window, a positive area is clockwise on screen. */
-    ccw = area < 0.0f;
-    front = (dc->cull & RLG_FRONT_FACE_CW) ? !ccw : ccw;
-    if (!dc->is_point && (((dc->cull & RLG_CULL_FRONT) && front) || ((dc->cull & RLG_CULL_BACK) && !front))) {
-        return;
-    }
-    dc->d->r3d->stats.prims++;
-    nbuf = color_buffers(dc->d);
 
     float minx = fminf(v0->pos[0], fminf(v1->pos[0], v2->pos[0]));
     float maxx = fmaxf(v0->pos[0], fmaxf(v1->pos[0], v2->pos[0]));
     float miny = fminf(v0->pos[1], fminf(v1->pos[1], v2->pos[1]));
     float maxy = fmaxf(v0->pos[1], fmaxf(v1->pos[1], v2->pos[1]));
     int x0 = (int)floorf(minx), x1 = (int)ceilf(maxx), y0 = (int)floorf(miny), y1 = (int)ceilf(maxy);
-    x0 = x0 < dc->sc_x0 ? dc->sc_x0 : x0;
-    y0 = y0 < dc->sc_y0 ? dc->sc_y0 : y0;
-    x1 = x1 > dc->sc_x1 ? dc->sc_x1 : x1;
-    y1 = y1 > dc->sc_y1 ? dc->sc_y1 : y1;
+    x0 = x0 < dc->info.sc_x0 ? dc->info.sc_x0 : x0;
+    y0 = y0 < dc->info.sc_y0 ? dc->info.sc_y0 : y0;
+    x1 = x1 > dc->info.sc_x1 ? dc->info.sc_x1 : x1;
+    y1 = y1 > dc->info.sc_y1 ? dc->info.sc_y1 : y1;
     if (x0 > x1 || y0 > y1) {
         return;
     }
@@ -521,8 +527,8 @@ static void raster_triangle(DrawCtx *dc, const R3DVertex *v0, const R3DVertex *v
                         }
                     }
                 }
-                cover[l] = inside && x >= dc->sc_x0 && x <= dc->sc_x1 && y >= dc->sc_y0 &&
-                           y <= dc->sc_y1 && clip_rule_pass(dc->d, x, y);
+                cover[l] = inside && x >= dc->info.sc_x0 && x <= dc->info.sc_x1 && y >= dc->info.sc_y0 &&
+                           y <= dc->info.sc_y1 && clip_rule_pass(dc->d, x, y);
                 any |= cover[l];
 
                 /* Perspective-correct attributes; z is linear in screen space. */
@@ -544,6 +550,44 @@ static void raster_triangle(DrawCtx *dc, const R3DVertex *v0, const R3DVertex *v
             }
         }
     }
+}
+
+/* Culling, then either collect the triangle for the host backend or scan it. */
+static void raster_triangle(DrawCtx *dc, const R3DVertex *v0, const R3DVertex *v1,
+                            const R3DVertex *v2)
+{
+    float area = tri_area(v0, v1, v2);
+    bool ccw, front;
+
+    if (area == 0.0f || !isfinite(area)) {
+        return;
+    }
+    /* In the y-down window, a positive area is clockwise on screen. */
+    ccw = area < 0.0f;
+    front = (dc->cull & RLG_FRONT_FACE_CW) ? !ccw : ccw;
+    if (!dc->is_point && (((dc->cull & RLG_CULL_FRONT) && front) || ((dc->cull & RLG_CULL_BACK) && !front))) {
+        return;
+    }
+    dc->d->r3d->stats.prims++;
+    if (!dc->tris) {
+        scan_triangle(dc, v0, v1, v2, front);
+        return;
+    }
+    if (dc->ntris == dc->cap) {
+        unsigned ncap = dc->cap * 2;
+        R3DTri *nt = realloc(dc->tris, ncap * sizeof(*nt));
+        if (!nt) {
+            dc->collect_failed = true;
+            return;
+        }
+        dc->tris = nt;
+        dc->cap = ncap;
+    }
+    dc->tris[dc->ntris].v[0] = *v0;
+    dc->tris[dc->ntris].v[1] = *v1;
+    dc->tris[dc->ntris].v[2] = *v2;
+    dc->tris[dc->ntris].front = front;
+    dc->ntris++;
 }
 
 /* ---- clipping and assembly ----------------------------------------------------------- */
@@ -692,30 +736,34 @@ void r3d_draw_prims(RLGDevice *d, uint32_t prim, R3DVertex *v, uint32_t n)
     uint32_t vte = rlg_reg_read32(d, RLG_VAP_VTE_CNTL);
     uint32_t sc_tl = rlg_reg_read32(d, RLG_SC_SCISSORS_TL), sc_br = rlg_reg_read32(d, RLG_SC_SCISSORS_BR);
 
-    dc.fp = r3d_fs_build(d);
-    if (!dc.fp) {
+    dc.info.fp = r3d_fs_build(d);
+    if (!dc.info.fp) {
         return;
+    }
+    if (rlg_host_is_active(d)) {
+        dc.cap = 64;
+        dc.tris = malloc(dc.cap * sizeof(*dc.tris));
     }
     dc.clip = !(rlg_reg_read32(d, RLG_VAP_CLIP_CNTL) & RLG_CLIP_DISABLE) && !(vte & RLG_VTX_XY_FMT);
     dc.dx_clip = (rlg_reg_read32(d, RLG_VAP_CNTL) & RLG_DX_CLIP_SPACE_DEF) != 0;
-    dc.fmt0 = rlg_reg_read32(d, RLG_VAP_OUTPUT_VTX_FMT_0);
+    dc.info.fmt0 = rlg_reg_read32(d, RLG_VAP_OUTPUT_VTX_FMT_0);
     dc.fmt1 = rlg_reg_read32(d, RLG_VAP_OUTPUT_VTX_FMT_1);
     dc.cull = rlg_reg_read32(d, RLG_SU_CULL_MODE);
     dc.is_point = false;
     uint32_t gb = rlg_reg_read32(d, RLG_GB_ENABLE);
     for (unsigned t = 0; t < R3D_MAX_TEXCOORD; ++t) {
         unsigned stuff = (gb >> (16 + 2 * t)) & 3u;
-        dc.tex_count[t] = (dc.fmt1 >> (3 * t)) & 7u;
+        dc.info.tex_count[t] = (dc.fmt1 >> (3 * t)) & 7u;
         if (prim == PRIM_POINTS && (gb & RLG_GB_POINT_STUFF_ENABLE) && stuff) {
-            dc.tex_count[t] = stuff == 1 ? 2 : 3;
+            dc.info.tex_count[t] = stuff == 1 ? 2 : 3;
         }
     }
-    dc.sc_x0 = 0; dc.sc_y0 = 0; dc.sc_x1 = 4095; dc.sc_y1 = 4095;
+    dc.info.sc_x0 = 0; dc.info.sc_y0 = 0; dc.info.sc_x1 = 4095; dc.info.sc_y1 = 4095;
     if (sc_br) {
         int x0 = (int)(sc_tl & 0x1fffu) - RLG_CLIPRECT_OFFSET, y0 = (int)((sc_tl >> 13) & 0x1fffu) - RLG_CLIPRECT_OFFSET;
         int x1 = (int)(sc_br & 0x1fffu) - RLG_CLIPRECT_OFFSET, y1 = (int)((sc_br >> 13) & 0x1fffu) - RLG_CLIPRECT_OFFSET;
-        dc.sc_x0 = x0 > 0 ? x0 : 0; dc.sc_y0 = y0 > 0 ? y0 : 0;
-        dc.sc_x1 = x1 < 4095 ? x1 : 4095; dc.sc_y1 = y1 < 4095 ? y1 : 4095;
+        dc.info.sc_x0 = x0 > 0 ? x0 : 0; dc.info.sc_y0 = y0 > 0 ? y0 : 0;
+        dc.info.sc_x1 = x1 < 4095 ? x1 : 4095; dc.info.sc_y1 = y1 < 4095 ? y1 : 4095;
     }
 
     switch (prim) {
@@ -757,5 +805,18 @@ void r3d_draw_prims(RLGDevice *d, uint32_t prim, R3DVertex *v, uint32_t n)
         d->r3d->stats.unsupported++;
         break;
     }
-    r3d_fs_free(dc.fp);
+    if (dc.tris) {
+        R3DTri *tris = dc.tris;
+        dc.tris = NULL;                 /* scan_triangle below must not collect */
+        if (dc.collect_failed || r3d_vk_draw(d, &dc.info, tris, dc.ntris) != 0) {
+            d->r3d->stats.sw_fallbacks++;
+            for (unsigned i = 0; i < dc.ntris; ++i) {
+                scan_triangle(&dc, &tris[i].v[0], &tris[i].v[1], &tris[i].v[2], tris[i].front);
+            }
+        } else {
+            d->r3d->stats.vk_draws++;
+        }
+        free(tris);
+    }
+    r3d_fs_free(dc.info.fp);
 }

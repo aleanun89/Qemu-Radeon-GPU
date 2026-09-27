@@ -38,8 +38,16 @@
   "demo": "rs480, x300, x700xt, r9550, x600xt, x550xtx, x850xt, x850xt-agp (legacy CRTC), rs600 and rs690 (AVIVO) 640x480x32 scanout + 2D fill passed",
   "romid_tool": "tools/romid.py identified all 10 local ROMs in bios/ (not versioned) and matched each to a profile",
   "qemu_pcie_note": "hybrid PCI/PCIe pattern (INTERFACE_PCIE_DEVICE + QEMU_PCI_CAP_EXPRESS in a parent-realize wrapper + pcie_endpoint_cap_init) follows hw/virtio/virtio-pci.c; signatures checked against QEMU master headers, not compiled",
-  "vulkan_backend_compiled_with_sdk": false,
   "qemu_overlay_patcher": "run twice against hw/display/{meson.build,Kconfig,vga_int.h} from QEMU master 11.1.50: idempotent",
   "qemu_adapter_full_compile": false,
-  "qemu_adapter_note": "API usage checked against QEMU master hw/display/ati.c and vga.c (11.1.50); not compiled inside a full QEMU tree and not booted with a guest."
+  "qemu_adapter_note": "API usage checked against QEMU master hw/display/ati.c and vga.c (11.1.50); not compiled inside a full QEMU tree and not booted with a guest.",
+  "vulkan_backend": {
+    "build": "zig cc 0.16.0 with Khronos Vulkan-Headers (header 1.4.364), -DRLG_HAVE_VULKAN=1; the loader is opened at run time (no link-time dependency); also built and tested without Vulkan headers (stubs)",
+    "gpu": "AMD Radeon RX 9070 XT, Vulkan 1.4.349, loader 1.4.341 (Windows 11)",
+    "tests": "test-3d vulkan: all 14 groups pass; 24 draws on the GPU, 1 expected software fallback (CBZB clear)",
+    "mutation_check": "CMP operand swap, presub 1-x -> 1+x, BC red/blue swap, stencil op shift and mip level offsets each make 'test-3d vulkan' fail",
+    "benchmark": "tests/bench_3d.c, 640x480 full-screen textured quad: software 101.84 ms/draw (3.0 Mpixel/s), Vulkan phase 1 5.25 ms/draw (58.5 Mpixel/s)",
+    "spirv_validation": "no spirv-val available; modules were accepted and executed correctly by the AMD driver; opcode values checked against SPIRV-Headers"
+  },
+  "qemu_meson_vulkan": "patcher emits cc.has_header('vulkan/vulkan.h') -> -DRLG_HAVE_VULKAN=1 and cc.find_library('dl'); not built inside a QEMU tree"
 }

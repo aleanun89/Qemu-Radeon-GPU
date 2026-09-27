@@ -157,6 +157,53 @@ comprueban píxeles contra valores calculados a mano. Entre otros:
 Además, mutaciones deliberadas en CMP, float24, la regla del RS690 y la
 orientación del culling hacen fallar los tests.
 
+### Backend Vulkan del 3D (`src/vk_backend.c`, `src/vk_shader.c`, `src/rlg_spirv.c`)
+
+El trabajo se divide como en un driver con SW TCL:
+
+- **CPU (código ya verificado):** fetch de vértices, PVS, clipping, culling,
+  expansión de puntos y líneas, y el mapeo RS.
+- **GPU del host:** todo lo que ocurre por píxel.
+
+Piezas:
+
+- **Traductor US → SPIR-V:** reproduce una a una las construcciones del
+  intérprete por software (pares RGB/Alpha, presub, swizzles, omod y clamp,
+  CND/CMP, TEX/TXP/TXB con LOD implícito, KIL y alpha test con
+  `OpDemoteToHelperInvocation`, escritura de profundidad). El generador de
+  SPIR-V es propio y no tiene dependencias; sus opcodes están comprobados contra
+  SPIRV-Headers.
+- **Carga dinámica del loader** (`vulkan-1.dll` / `libvulkan.so.1`): para
+  compilar solo hacen falta las cabeceras de Vulkan.
+- **Mapeo de estado:**
+  - formatos de colorbuffer con el orden de canales de `US_OUT_FMT`;
+  - blending, máscara de canales, Z16 y Z24S8 (sobre `D32_SFLOAT_S8_UINT`
+    porque AMD no soporta D24S8), stencil a doble cara;
+  - texturas R300 (incluido BC1-3 con el swizzle DXTC del R400, sRGB y float),
+    con cada nivel mip leído desde su posición en el layout de Mesa;
+  - samplers, scissor y cliprect.
+- **Fallback por draw:** cualquier estado que no se pueda reproducir con
+  exactitud (MRT, CBZB, texturas 3D o cubemaps, formatos con signo, reglas de
+  cliprect complejas…) se dibuja por software. La corrección nunca empeora.
+- **Coherencia (fase 1):** cada draw sube la región afectada de colorbuffer y
+  depth desde la VRAM emulada y la devuelve al terminar.
+
+**Verificación en una RX 9070 XT:** los 14 grupos de `tests/test_3d.c`
+pasan igual con `test-3d vulkan` (24 draws en GPU y un fallback esperado, el
+CBZB). Además, las mutaciones en el traductor o el backend (orden de CMP,
+presub, swizzle BC, stencil ops, offsets de mips) hacen fallar los tests.
+
+**Rendimiento** (`tests/bench_3d.c`, quad texturizado de 640×480 a pantalla
+completa):
+
+| Backend | ms/draw | Mpíxel/s |
+|---|---:|---:|
+| Software | 101,8 | 3,0 |
+| Vulkan (fase 1) | 5,25 | 58,5 |
+
+El coste de la fase 1 está en la sincronización por draw, no en la GPU; ver
+"Lo que falta".
+
 ### Adaptador QEMU (`qemu/overlay/`)
 
 - Dispositivo `radeon-legacy-vga`.
@@ -174,12 +221,16 @@ orientación del culling hacen fallar los tests.
 
 ## Lo que falta
 
-- **Backend Vulkan del 3D:** traducir el mismo estado decodificado a pipelines
-  y SPIR-V (US y PVS), con caché de superficies VRAM ↔ `VkImage`. El
-  renderizador por software servirá de referencia para compararlo píxel a
-  píxel.
+- **Fase 2 del backend Vulkan, el paso que da el rendimiento:**
+  - superficies residentes en la GPU (colorbuffer, depth, texturas), que se
+    escriben de vuelta a la VRAM solo cuando la CPU o el scanout las leen;
+  - caché de texturas;
+  - lotes de draws sin esperar un fence en cada uno;
+  - un hilo worker de comandos (patrón de `dxvk_cs`) para liberar la vCPU;
+  - traducir también el PVS a SPIR-V, para no hacer el TCL en la CPU.
 - **Rendimiento del 3D por software:** el rasterizado es por píxel y se ejecuta
-  en el hilo de la vCPU. Es correcto, pero lento para juegos.
+  en el hilo de la vCPU. Es correcto, pero lento; queda como referencia y como
+  fallback.
 - **Aspectos del 3D sin implementar:**
   - control de flujo del PVS (loops/jumps de `PVS_FLOW_CNTL`, se ejecuta en
     lineal);
@@ -211,13 +262,24 @@ ctest --test-dir build --output-on-failure
 ./build/radeon-legacy-demo rs690
 ```
 
+- El backend Vulkan se activa si CMake encuentra `vulkan/vulkan.h`, ya sea en
+  el sistema, en `VULKAN_SDK` o en `-DRLG_VULKAN_INCLUDE=<dir>`. No hace falta
+  enlazar contra Vulkan.
+- El test `3d-vulkan` se salta (código 77) si no hay una GPU Vulkan 1.3.
+
 Sin CMake ni compilador de C instalados (por ejemplo, en Windows), sirve
 `zig cc` desde pip:
 
 ```bash
 python -m pip install --user ziglang
-python -m ziglang cc -std=c11 -Wall -Wextra -Iinclude src/chip.c src/device.c src/memory.c src/irq.c src/display.c src/engine2d.c src/cp.c src/mmio.c src/r3d_state.c src/r3d_vertex.c src/r3d_fs.c src/r3d_tex.c src/r3d_raster.c src/r3d_draw.c src/vulkan.c tests/test_3d.c -o test-3d.exe
+python -m ziglang cc -std=c11 -O2 -Iinclude -I<vulkan-headers> -DRLG_HAVE_VULKAN=1 src/chip.c src/device.c src/memory.c src/irq.c src/display.c src/engine2d.c src/cp.c src/mmio.c src/r3d_state.c src/r3d_vertex.c src/r3d_fs.c src/r3d_tex.c src/r3d_raster.c src/r3d_draw.c src/rlg_spirv.c src/vk_shader.c src/vk_backend.c tests/test_3d.c -o test-3d.exe
 ```
+
+```bash
+test-3d.exe vulkan
+```
+
+Para medir el rendimiento, `tests/bench_3d.c` acepta `bench-3d software|vulkan [draws]`.
 
 ## Integración QEMU
 
@@ -232,7 +294,10 @@ qemu-system-x86_64 -vga none -device radeon-legacy-vga,model=rs690 -m 2048 -driv
 ```
 
 ```bash
-qemu-system-x86_64 -machine q35 -vga none -device radeon-legacy-vga,model=x700,bus=pcie.0 -m 2048 -drive file=linux.qcow2
+qemu-system-x86_64 -machine q35 -vga none -device radeon-legacy-vga,model=x700,bus=pcie.0,backend=vulkan -m 2048 -drive file=linux.qcow2
 ```
+
+`backend=vulkan` ejecuta el 3D en la GPU del host (por defecto es `software`).
+Si Vulkan no está disponible, QEMU avisa y usa software.
 
 Cambios respecto a v3: ver `CHANGELOG.md`.
