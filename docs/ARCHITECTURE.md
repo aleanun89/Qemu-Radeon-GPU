@@ -105,7 +105,8 @@ r3d_vk_draw (vk_backend.c)
 
 - **Loader:** Vulkan se carga en tiempo de ejecución; basta con las
   cabeceras.
-- **Fase 1:** sincroniza en cada draw.
+- **Fase 1:** sincroniza en cada draw. El staging que lee la CPU está en
+  memoria `HOST_CACHED`, y las imágenes y los samplers se reciclan entre draws.
 - **Fase 2:** superficies residentes en la GPU, escritas de vuelta a la VRAM
   solo cuando se leen, lotes de draws sin esperar fence, un hilo worker y el
   PVS traducido a SPIR-V.

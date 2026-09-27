@@ -46,7 +46,7 @@
     "gpu": "AMD Radeon RX 9070 XT, Vulkan 1.4.349, loader 1.4.341 (Windows 11)",
     "tests": "test-3d vulkan: all 14 groups pass; 24 draws on the GPU, 1 expected software fallback (CBZB clear)",
     "mutation_check": "CMP operand swap, presub 1-x -> 1+x, BC red/blue swap, stencil op shift and mip level offsets each make 'test-3d vulkan' fail",
-    "benchmark": "tests/bench_3d.c, 640x480 full-screen textured quad: software 101.84 ms/draw (3.0 Mpixel/s), Vulkan phase 1 5.25 ms/draw (58.5 Mpixel/s)",
+    "benchmark": "tests/bench_3d.c, 640x480 full-screen textured quad: software 101.84 ms/draw (3.0 Mpixel/s), Vulkan phase 1 initially 5.25 ms/draw (58.5 Mpixel/s), 0.33 ms/draw (935 Mpixel/s) after moving the readback staging buffer to HOST_CACHED memory (3.5 ms -> 0.04 ms) and caching images/samplers (0.65 ms -> ~0); remaining cost is the per-draw fence wait (~0.22 ms)",
     "spirv_validation": "no spirv-val available; modules were accepted and executed correctly by the AMD driver; opcode values checked against SPIRV-Headers"
   },
   "qemu_meson_vulkan": "patcher emits cc.has_header('vulkan/vulkan.h') -> -DRLG_HAVE_VULKAN=1 and cc.find_library('dl'); not built inside a QEMU tree"

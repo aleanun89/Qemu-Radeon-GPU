@@ -90,6 +90,42 @@ typedef struct {
 
 #define PIPE_CACHE_MAX 256
 
+/*
+ * Images and samplers are recycled between draws: creating and freeing them
+ * (vkAllocateMemory included) cost more than the draw itself. Every draw waits
+ * for its fence, so an image is free again as soon as the draw returns.
+ */
+typedef struct {
+    VkFormat fmt;
+    uint32_t w, h, levels, base;
+    VkImageUsageFlags usage;
+    VkImageAspectFlags aspect;
+    VkComponentMapping swz;
+} ImgKey;
+
+typedef struct {
+    ImgKey key;
+    VkImg img;
+    bool busy;
+} ImgEntry;
+
+#define IMG_CACHE_MAX 64
+
+typedef struct {
+    VkFilter mag, min;
+    VkSamplerMipmapMode mip;
+    VkSamplerAddressMode u, v;
+    VkBorderColor border;
+    float bias, max_lod;
+} SampKey;
+
+typedef struct {
+    SampKey key;
+    VkSampler samp;
+} SampEntry;
+
+#define SAMP_CACHE_MAX 64
+
 struct RLGHost {
     void *lib;
     PFN_vkGetInstanceProcAddr gipa;
@@ -109,6 +145,10 @@ struct RLGHost {
     VkBuf staging, ubo, vbo;
     PipeEntry pipes[PIPE_CACHE_MAX];
     unsigned npipes;
+    ImgEntry imgs[IMG_CACHE_MAX];
+    unsigned nimgs;
+    SampEntry samps[SAMP_CACHE_MAX];
+    unsigned nsamps;
     VK_INSTANCE_FNS(DECL_FN)
     VK_DEVICE_FNS(DECL_FN)
 };
@@ -160,8 +200,12 @@ static void buf_destroy(RLGHost *h, VkBuf *b)
     memset(b, 0, sizeof(*b));
 }
 
-/* Host-visible, coherent, persistently mapped; grows on demand. */
-static int buf_ensure(RLGHost *h, VkBuf *b, VkDeviceSize size, VkBufferUsageFlags usage)
+/*
+ * Host-visible, coherent, persistently mapped; grows on demand. Buffers the CPU
+ * reads back (staging) ask for HOST_CACHED: the first coherent type is usually
+ * uncached or BAR memory, where CPU reads run at a few hundred MB/s.
+ */
+static int buf_ensure(RLGHost *h, VkBuf *b, VkDeviceSize size, VkBufferUsageFlags usage, bool cpu_read)
 {
     VkMemoryRequirements mr;
     int mt;
@@ -177,7 +221,14 @@ static int buf_ensure(RLGHost *h, VkBuf *b, VkDeviceSize size, VkBufferUsageFlag
         return -1;
     }
     h->vkGetBufferMemoryRequirements(h->dev, b->buf, &mr);
-    mt = find_mem(h, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    mt = -1;
+    if (cpu_read) {
+        mt = find_mem(h, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                            VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    }
+    if (mt < 0) {
+        mt = find_mem(h, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
     VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
                                 .memoryTypeIndex = (uint32_t)mt };
     if (mt < 0 || h->vkAllocateMemory(h->dev, &ai, NULL, &b->mem) != VK_SUCCESS ||
@@ -237,6 +288,95 @@ static int img_create(RLGHost *h, VkImg *i, VkFormat fmt, uint32_t w, uint32_t h
     return 0;
 }
 
+/* Borrow a cached image matching the description, creating or replacing one if needed. */
+static int img_get(RLGHost *h, VkImg *out, VkFormat fmt, uint32_t w, uint32_t hh, uint32_t levels,
+                   VkImageUsageFlags usage, VkImageAspectFlags aspect, uint32_t base_level,
+                   const VkComponentMapping *swz)
+{
+    ImgKey k;
+    ImgEntry *e = NULL;
+
+    memset(&k, 0, sizeof(k));
+    k.fmt = fmt;
+    k.w = w;
+    k.h = hh;
+    k.levels = levels;
+    k.base = base_level;
+    k.usage = usage;
+    k.aspect = aspect;
+    if (swz) {
+        k.swz = *swz;
+    }
+    for (unsigned i = 0; i < h->nimgs; ++i) {
+        if (!h->imgs[i].busy && !memcmp(&h->imgs[i].key, &k, sizeof(k))) {
+            e = &h->imgs[i];
+            goto found;
+        }
+    }
+    if (h->nimgs < IMG_CACHE_MAX) {
+        e = &h->imgs[h->nimgs++];
+    } else {
+        for (unsigned i = 0; i < h->nimgs && !e; ++i) {
+            if (!h->imgs[i].busy) {
+                e = &h->imgs[i];
+            }
+        }
+        if (!e) {
+            return -1;
+        }
+        img_destroy(h, &e->img);
+    }
+    if (img_create(h, &e->img, fmt, w, hh, levels, usage, aspect, base_level, swz) != 0) {
+        /* leave a dead entry that never matches */
+        memset(&e->key, 0xff, sizeof(e->key));
+        return -1;
+    }
+    e->key = k;
+found:
+    e->busy = true;
+    *out = e->img;
+    return 0;
+}
+
+static void img_put(RLGHost *h, VkImg *i)
+{
+    for (unsigned n = 0; i->img && n < h->nimgs; ++n) {
+        if (h->imgs[n].img.img == i->img) {
+            h->imgs[n].busy = false;
+            break;
+        }
+    }
+    memset(i, 0, sizeof(*i));
+}
+
+static VkSampler samp_get(RLGHost *h, const VkSamplerCreateInfo *sci)
+{
+    SampKey k;
+    VkSampler s;
+
+    memset(&k, 0, sizeof(k));
+    k.mag = sci->magFilter;
+    k.min = sci->minFilter;
+    k.mip = sci->mipmapMode;
+    k.u = sci->addressModeU;
+    k.v = sci->addressModeV;
+    k.border = sci->borderColor;
+    k.bias = sci->mipLodBias;
+    k.max_lod = sci->maxLod;
+    for (unsigned i = 0; i < h->nsamps; ++i) {
+        if (!memcmp(&h->samps[i].key, &k, sizeof(k))) {
+            return h->samps[i].samp;
+        }
+    }
+    if (h->vkCreateSampler(h->dev, sci, NULL, &s) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+    /* r3d_vk_draw keeps room for 16 units, so this never overflows */
+    h->samps[h->nsamps].key = k;
+    h->samps[h->nsamps++].samp = s;
+    return s;
+}
+
 void rlg_host_destroy(RLGDevice *d)
 {
     RLGHost *h;
@@ -247,6 +387,12 @@ void rlg_host_destroy(RLGDevice *d)
         h->vkDeviceWaitIdle(h->dev);
         for (unsigned i = 0; i < h->npipes; ++i) {
             h->vkDestroyPipeline(h->dev, h->pipes[i].pipe, NULL);
+        }
+        for (unsigned i = 0; i < h->nimgs; ++i) {
+            img_destroy(h, &h->imgs[i].img);
+        }
+        for (unsigned i = 0; i < h->nsamps; ++i) {
+            h->vkDestroySampler(h->dev, h->samps[i].samp, NULL);
         }
         buf_destroy(h, &h->staging);
         buf_destroy(h, &h->ubo);
@@ -384,7 +530,7 @@ int rlg_host_init(RLGDevice *d)
     VkDescriptorPoolCreateInfo dpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
                                        .poolSizeCount = 2, .pPoolSizes = ps };
     if (h->vkCreateDescriptorPool(h->dev, &dpi, NULL, &h->dpool) != VK_SUCCESS) goto fail;
-    if (buf_ensure(h, &h->ubo, sizeof(VKFSUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) != 0) goto fail;
+    if (buf_ensure(h, &h->ubo, sizeof(VKFSUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, false) != 0) goto fail;
     return 0;
 
 fail:
@@ -658,6 +804,13 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
     memset(&key, 0, sizeof(key));
     memset(&pk, 0, sizeof(pk));
     memset(tex, 0, sizeof(tex));
+    if (h->nsamps > SAMP_CACHE_MAX - 16) {
+        /* no draw is in flight between calls, so the whole cache can go */
+        for (unsigned i = 0; i < h->nsamps; ++i) {
+            h->vkDestroySampler(h->dev, h->samps[i].samp, NULL);
+        }
+        h->nsamps = 0;
+    }
 
     /* ---- colour buffer 0 only (MRT and CBZB fall back) ---- */
     uint32_t cctl = rlg_reg_read32(d, RLG_RB3D_CCTL);
@@ -849,7 +1002,7 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
             goto out;
         }
         uint32_t levels = ti.levels + 1;
-        if (img_create(h, &tex[u].img, tf, ti.w0, ti.h0, levels,
+        if (img_get(h, &tex[u].img, tf, ti.w0, ti.h0, levels,
                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, ti.min_level < levels ? ti.min_level : 0, &cm) != 0) {
             goto out;
@@ -865,7 +1018,7 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
             .mipLodBias = (float)bias / 32.0f, .minLod = 0.0f,
             .maxLod = mip == 0 ? 0.0f : (float)(levels - 1 - (ti.min_level < levels ? ti.min_level : 0)),
             .borderColor = bcol };
-        if (h->vkCreateSampler(h->dev, &sci, NULL, &tex[u].sampler) != VK_SUCCESS) {
+        if (!(tex[u].sampler = samp_get(h, &sci))) {
             goto out;
         }
     }
@@ -906,8 +1059,8 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
     VkDeviceSize off_rb = ALIGN16(off_tex + tex_total);
     VkDeviceSize total = off_rb + ALIGN16(sz_color) + ALIGN16(sz_depth) + ALIGN16(sz_sten);
     VkDeviceSize vsize = (VkDeviceSize)count * 3 * (nvary + 1) * 16;
-    if (buf_ensure(h, &h->staging, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT) != 0 ||
-        buf_ensure(h, &h->vbo, vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) != 0) {
+    if (buf_ensure(h, &h->staging, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true) != 0 ||
+        buf_ensure(h, &h->vbo, vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, false) != 0) {
         goto out;
     }
     uint8_t *stg = h->staging.map;
@@ -962,13 +1115,13 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
     }
 
     /* ---- images ---- */
-    if (img_create(h, &color, cvk, W, H, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+    if (img_get(h, &color, cvk, W, H, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                    VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, NULL) != 0) {
         goto out;
     }
     VkImageAspectFlags daspect = pk.depth_fmt == VK_FORMAT_D32_SFLOAT_S8_UINT
                                      ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
-    if (use_depth && img_create(h, &depth, pk.depth_fmt, W, H, 1, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+    if (use_depth && img_get(h, &depth, pk.depth_fmt, W, H, 1, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, daspect, 0, NULL) != 0) {
         goto out;
     }
@@ -1117,11 +1270,10 @@ int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsig
 
 out:
     for (unsigned u = 0; u < 16; ++u) {
-        if (tex[u].sampler) h->vkDestroySampler(h->dev, tex[u].sampler, NULL);
-        img_destroy(h, &tex[u].img);
+        img_put(h, &tex[u].img);
     }
-    img_destroy(h, &color);
-    img_destroy(h, &depth);
+    img_put(h, &color);
+    img_put(h, &depth);
     free(fs);
     return rc;
 }

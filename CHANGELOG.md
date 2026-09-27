@@ -1,5 +1,17 @@
 # Cambios
 
+## Rendimiento del backend Vulkan
+
+- **Staging en memoria `HOST_CACHED`:**
+  - el buffer que la CPU relee tras cada draw se asignaba en el primer tipo
+    `HOST_VISIBLE|COHERENT`, que en AMD no tiene caché;
+  - la copia de vuelta de 640×480 pasa de 3,5 ms a 0,04 ms.
+- **Caché de imágenes y samplers:** color, depth y texturas se reciclan entre
+  draws por formato, tamaño, niveles y swizzle, en lugar de crear y liberar
+  memoria en cada draw (0,65 ms → ~0).
+- **Resultado en `bench-3d`:** de 5,25 a 0,33 ms/draw (58,5 → 935 Mpíxel/s).
+  Lo que queda es la espera del fence por draw.
+
 ## Backend Vulkan del 3D (fase 1)
 
 - **Reparto del trabajo:**

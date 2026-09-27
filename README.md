@@ -199,10 +199,17 @@ completa):
 | Backend | ms/draw | Mpíxel/s |
 |---|---:|---:|
 | Software | 101,8 | 3,0 |
-| Vulkan (fase 1) | 5,25 | 58,5 |
+| Vulkan (fase 1, versión inicial) | 5,25 | 58,5 |
+| Vulkan (fase 1 + staging cacheado y caché de imágenes/samplers) | 0,33 | 935 |
 
-El coste de la fase 1 está en la sincronización por draw, no en la GPU; ver
-"Lo que falta".
+Desglose medido de la versión inicial: 3,5 ms eran la lectura desde la CPU del
+buffer de staging, asignado en memoria sin caché, y 0,65 ms la creación y
+destrucción de imágenes y samplers. Ahora el coste está en la espera del fence
+de cada draw (~0,22 ms); quitarla es la fase 2 (ver "Lo que falta").
+
+Como referencia, una X300 SE (RV370, 4 píxeles/ciclo a 325 MHz) tiene un
+fill rate teórico de 1,3 Gpíxel/s. El límite práctico ya no es el píxel sino el
+número de draws por frame.
 
 ### Adaptador QEMU (`qemu/overlay/`)
 
