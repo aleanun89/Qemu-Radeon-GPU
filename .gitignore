@@ -3,3 +3,7 @@ build/
 *.o
 *.obj
 *.pdb
+
+# Proprietary VBIOS images: never commit
+bios/
+*.rom

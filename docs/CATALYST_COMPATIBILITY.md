@@ -41,8 +41,12 @@ Añade trazas propias de:
 
 - **Máquina:** usa `-machine q35`. Sin bus PCIe, `radeon` no selecciona el
   PCIe GART.
-- **BIOS:** estas tarjetas suelen llevar VBIOS clásica (COMBIOS) en lugar de
-  AtomBIOS. El driver la necesita igualmente para conectores y relojes.
+- **BIOS:** depende de la tarjeta.
+  - X300 (RV370): VBIOS clásica (**COMBIOS**, código x86).
+  - X700 (RV410): puede ser **AtomBIOS**. La X700 PRO `1002:5E4B`,
+    P/N 113-A37910-103, lo es.
+
+  El driver la necesita en ambos casos para conectores y relojes.
 - **Hito propio:** después del `ib test`, el siguiente paso de r300g en estas
   tarjetas es subir programas de vertex shader (TCL por hardware). Esos
   programas llegan al CP como escrituras a los registros `VAP_PVS_*`, que hoy

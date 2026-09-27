@@ -155,6 +155,24 @@ También está `qemu/build_qemu_example.sh /ruta/qemu`.
 Espera que las tablas ATOM toquen PLL, encoders y registros MC que todavía no
 están modelados (van al almacén genérico de registros).
 
+### ROMs locales en `bios/`
+
+La carpeta `bios/` del repositorio está en `.gitignore` (igual que `*.rom`):
+las VBIOS son firmware propietario y **no se suben**. Usa `model=` a juego con
+el PCI ID de la ROM:
+
+| ROM | PCI ID | Tipo | Uso |
+|---|---|---|---|
+| X300 (RV370), P/N 113-A25902-103 | `1002:5B60` | COMBIOS | `model=x300,romfile=bios/<rom>` |
+| X700 PRO (RV410), P/N 113-A37910-103 | `1002:5E4B` | AtomBIOS | `model=x700pro,romfile=bios/<rom>` |
+
+- **POST:** con una VBIOS real, SeaBIOS ejecuta su código de inicialización.
+  Esa BIOS programa el controlador de memoria y los PLL, y **sondea registros
+  esperando bits de estado**. Si algún registro que sondea no está modelado, el
+  POST puede colgarse o fallar.
+- **Qué hacer primero:** prueba antes con `vgabios-ati.bin`. Después, con la
+  ROM real y `verbose=on -d unimp`, para ver qué accesos faltan.
+
 ## 9. Depuración
 
 ```bash
