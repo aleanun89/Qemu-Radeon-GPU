@@ -45,12 +45,14 @@ static uint32_t px(int x, int y) { uint32_t v; memcpy(&v, dev->vram + CBUF + (y 
 /* ---- ring ------------------------------------------------------------------ */
 static void ring(uint32_t v) { memcpy(dev->vram + RING + (wptr++ & 1023) * 4, &v, 4); }
 static void kick(void) { w(RLG_CP_RB_WPTR, wptr & 1023); }
+static bool defer_kick;             /* queue packets and submit them in one CP run */
 static void pkt3(uint32_t op, const uint32_t *p, uint32_t n)
 {
     ring(RLG_PM4_PACKET3(op, n));
     for (uint32_t i = 0; i < n; ++i) ring(p[i]);
-    kick();
+    if (!defer_kick) kick();
 }
+static void reg0(uint32_t reg, uint32_t v) { ring(RLG_PM4_PACKET0(reg, 1)); ring(v); }
 
 /* ---- US (fragment program) encoders: Mesa r300_fragprog_emit.c -------------- */
 enum { ARGC_SRC0C_XYZ = 0, ARGC_SRC1C_XYZ = 4, ARGC_SRC2C_XYZ = 8, ARGC_SRC0A = 12, ARGC_ZERO = 20,
@@ -329,6 +331,46 @@ static void test_depth_blend(void)
     memcpy(&z, dev->vram + ZBUF + (32 * W + 32) * 2, 2);
     CHECK(abs((int)z - (int)(0.3f * 65535)) <= 1);
 }
+
+/*
+ * Several draws with state changes in one CP run: the Vulkan backend batches
+ * them into one submission, so depth, blending and ordering must carry from
+ * draw to draw on the resident target.
+ */
+static void test_batched(void)
+{
+    setup(RLG_PROFILE_X1250_AMD);
+    setup_bypass_pos_color();
+    w(RLG_ZB_DEPTHOFFSET, FB + ZBUF);
+    w(RLG_ZB_DEPTHPITCH, W);
+    w(RLG_ZB_FORMAT, 0);
+    for (int i = 0; i < W * H; ++i) { uint16_t z = 0xffff; memcpy(dev->vram + ZBUF + i * 2, &z, 2); }
+    w(RLG_ZB_CNTL, (1u << 1) | (1u << 2));
+    w(RLG_ZB_ZSTENCILCNTL, 1);                      /* LESS */
+    const float red[] = QUAD(0.5f, 1, 0, 0, 1), green[] = QUAD(0.7f, 0, 1, 0, 1);
+    const float quarter[] = QUAD(0.1f, 0, 0, 0.25f, 1);
+    uint64_t before = dev->r3d->stats.vk_draws;
+    defer_kick = true;
+    draw_immd(13, red, 4, 8);
+    draw_immd(13, green, 4, 8);                     /* rejected by the depth written just before */
+    reg0(RLG_ZB_CNTL, 1u << 1);                     /* test, no write */
+    reg0(RLG_RB3D_CBLEND, 1u | (33u << 16) | (33u << 24));   /* ONE, ONE: additive */
+    for (int i = 0; i < 3; ++i) draw_immd(13, quarter, 4, 8);
+    defer_kick = false;
+    CHECK(px(32, 32) == 0);                         /* nothing runs before the kick */
+    kick();
+    uint32_t c = px(32, 32);
+    CHECK(((c >> 16) & 0xff) == 0xff && ((c >> 8) & 0xff) == 0);        /* red kept, green rejected */
+    CHECK((c & 0xff) >= 0xbe && (c & 0xff) <= 0xc0);                    /* blue 3 x 0.25 */
+    CHECK(px(70, 70) == 0);                                             /* outside the quads */
+    uint16_t z;
+    memcpy(&z, dev->vram + ZBUF + (32 * W + 32) * 2, 2);
+    CHECK(abs((int)z - (int)(0.5f * 65535)) <= 1);  /* only the red quad wrote depth */
+    if (use_vk) {
+        CHECK(dev->r3d->stats.vk_draws - before == 5);
+    }
+}
+#undef QUAD
 
 /* Textured quad: TEX in node 0, ARGB8888 nearest, texcoords through the RS. */
 static void test_texture(void)
@@ -668,6 +710,7 @@ int main(int argc, char **argv)
     test_tcl_vbo();
     test_indexed();
     test_depth_blend();
+    test_batched();
     test_texture();
     test_blitter_clear();
     test_point_stuffing();

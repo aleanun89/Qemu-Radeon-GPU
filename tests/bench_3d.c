@@ -1,7 +1,8 @@
 /*
  * 3D throughput: full-screen textured quads at 640x480 (ARGB8888, 256x256
  * texture, bilinear), drawn through the CP exactly like the tests do.
- * Usage: bench-3d [software|vulkan] [draws]
+ * Usage: bench-3d [software|vulkan] [draws] [draws per CP kick] [quad size]
+ * A game submits many draws per kick; the Vulkan backend batches them.
  */
 #include "radeon_r3d.h"
 #include <stdio.h>
@@ -33,6 +34,9 @@ int main(int argc, char **argv)
 {
     bool vk = argc > 1 && !strcmp(argv[1], "vulkan");
     int draws = argc > 2 ? atoi(argv[2]) : 50;
+    int per_kick = argc > 3 ? atoi(argv[3]) : 1;
+    float size = argc > 4 ? (float)atof(argv[4]) : 0.0f;
+    per_kick = per_kick < 1 ? 1 : (per_kick > 16 ? 16 : per_kick);  /* ring holds 1024 dwords */
     RLGConfig c = { .profile = RLG_PROFILE_X700PRO, .vram_size = 32u << 20,
                     .backend = vk ? RLG_BACKEND_VULKAN : RLG_BACKEND_SOFTWARE };
     dev = rlg_create(&c);
@@ -47,6 +51,8 @@ int main(int argc, char **argv)
     w(RLG_RB3D_COLORPITCH0, W | (6u << 21));
     w(RLG_US_OUT_FMT_0, (3u << 8) | (2u << 10) | (1u << 12));
     w(RLG_SC_CLIP_RULE, 0xffff);
+    w(RLG_SC_SCISSORS_TL, RLG_CLIPRECT_OFFSET | (RLG_CLIPRECT_OFFSET << 13));
+    w(RLG_SC_SCISSORS_BR, (RLG_CLIPRECT_OFFSET + W - 1) | ((RLG_CLIPRECT_OFFSET + H - 1) << 13));
     w(RLG_VAP_CNTL_STATUS, RLG_VAP_TCL_BYPASS);
     w(RLG_VAP_VTE_CNTL, RLG_VTX_XY_FMT | RLG_VTX_Z_FMT);
     w(RLG_VAP_OUTPUT_VTX_FMT_0, 1u);
@@ -75,20 +81,26 @@ int main(int argc, char **argv)
     w(RLG_TX_FORMAT0_0, 255u | (255u << 11));
     w(RLG_TX_FORMAT1_0, 0xcu | (3u << 9) | (2u << 12) | (1u << 15));
     w(RLG_TX_OFFSET_0, TEX);
-    const float v[] = { 0, 0, 0, 1, 0, 0, 0, 1,  W, 0, 0, 1, 1, 0, 0, 1,
-                        W, H, 0, 1, 1, 1, 0, 1,  0, H, 0, 1, 0, 1, 0, 1 };
+    float qw = size > 0 ? size : W, qh = size > 0 ? size : H;
 
     double t0 = now();
     for (int n = 0; n < draws; ++n) {
+        /* small quads walk across the screen so each draw touches new pixels */
+        float x = size > 0 ? (float)((n * 37) % (int)(W - qw)) : 0.0f;
+        float y = size > 0 ? (float)((n * 23) % (int)(H - qh)) : 0.0f;
+        const float v[] = { x, y, 0, 1, 0, 0, 0, 1,  x + qw, y, 0, 1, 1, 0, 0, 1,
+                            x + qw, y + qh, 0, 1, 1, 1, 0, 1,  x, y + qh, 0, 1, 0, 1, 0, 1 };
         ring(RLG_PM4_PACKET3(RLG_PM4_3D_DRAW_IMMD_2, 33));
         ring((3u << 4) | (4u << 16) | 13u);
         for (int i = 0; i < 32; ++i) ring(fbits(v[i]));
-        w(RLG_CP_RB_WPTR, wptr & 1023);
+        if ((n + 1) % per_kick == 0 || n + 1 == draws) {
+            w(RLG_CP_RB_WPTR, wptr & 1023);
+        }
     }
     double dt = now() - t0;
-    printf("%s: %d draws of %dx%d in %.3f s -> %.2f ms/draw, %.1f Mpixel/s (gpu %llu, sw %llu)\n",
-           vk ? "vulkan" : "software", draws, W, H, dt, dt * 1000.0 / draws,
-           (double)W * H * draws / dt / 1e6, (unsigned long long)dev->r3d->stats.vk_draws,
+    printf("%s: %d draws of %.0fx%.0f, %d per kick: %.3f ms/draw (%.0f draws/s), %.1f Mpixel/s (gpu %llu, sw %llu)\n",
+           vk ? "vulkan" : "software", draws, qw, qh, per_kick, dt * 1000.0 / draws, draws / dt,
+           (double)qw * qh * draws / dt / 1e6, (unsigned long long)dev->r3d->stats.vk_draws,
            (unsigned long long)dev->r3d->stats.sw_fallbacks);
     rlg_destroy(dev);
     return 0;

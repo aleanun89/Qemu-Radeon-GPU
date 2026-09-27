@@ -810,6 +810,7 @@ void r3d_draw_prims(RLGDevice *d, uint32_t prim, R3DVertex *v, uint32_t n)
         dc.tris = NULL;                 /* scan_triangle below must not collect */
         if (dc.collect_failed || r3d_vk_draw(d, &dc.info, tris, dc.ntris) != 0) {
             d->r3d->stats.sw_fallbacks++;
+            r3d_vk_flush(d);            /* the software path reads and writes VRAM */
             for (unsigned i = 0; i < dc.ntris; ++i) {
                 scan_triangle(&dc, &tris[i].v[0], &tris[i].v[1], &tris[i].v[2], tris[i].front);
             }

@@ -105,8 +105,14 @@ r3d_vk_draw (vk_backend.c)
 
 - **Loader:** Vulkan se carga en tiempo de ejecución; basta con las
   cabeceras.
-- **Fase 1:** sincroniza en cada draw. El staging que lee la CPU está en
-  memoria `HOST_CACHED`, y las imágenes y los samplers se reciclan entre draws.
+- **Lotes:** los draws de una ejecución del CP comparten command buffer. El
+  target se sube una vez y se queda residente, y `vk_flush` lo envía, espera y
+  copia de vuelta las filas sucias. El flush se fuerza al final del CP, antes de
+  escribir un registro no 3D, en un fallback por software, si una textura solapa
+  el target, al cambiar de target o al llegar a 256 draws. El staging que lee la
+  CPU está en memoria `HOST_CACHED`, y las imágenes y los samplers se reciclan.
+- **Pendiente:** caché de texturas entre lotes (hoy se suben en cada draw) y
+  sustituir la espera del flush por presentación directa.
 - **Fase 2:** superficies residentes en la GPU, escritas de vuelta a la VRAM
   solo cuando se leen, lotes de draws sin esperar fence, un hilo worker y el
   PVS traducido a SPIR-V.

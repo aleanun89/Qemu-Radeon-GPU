@@ -201,11 +201,18 @@ completa):
 | Software | 101,8 | 3,0 |
 | Vulkan (fase 1, versión inicial) | 5,25 | 58,5 |
 | Vulkan (fase 1 + staging cacheado y caché de imágenes/samplers) | 0,33 | 935 |
+| Vulkan con lotes, 16 draws por kick del CP | 0,080 | 3.858 |
+
+Con quads de 64×64 (más parecido a un juego: muchos draws pequeños), el número
+de draws por segundo pasa de ~4.750 con un draw por kick a **~17.500** con 16
+por kick (`bench-3d vulkan 4000 16 64`).
 
 Desglose medido de la versión inicial: 3,5 ms eran la lectura desde la CPU del
 buffer de staging, asignado en memoria sin caché, y 0,65 ms la creación y
-destrucción de imágenes y samplers. Ahora el coste está en la espera del fence
-de cada draw (~0,22 ms); quitarla es la fase 2 (ver "Lo que falta").
+destrucción de imágenes y samplers. Después, el coste estaba en esperar el fence
+en cada draw (~0,22 ms). Ahora los draws de una misma ejecución del CP van en un
+solo lote: el render target se queda en la GPU y se copia de vuelta a la VRAM
+una vez (ver `docs/ARCHITECTURE.md`).
 
 Como referencia, una X300 SE (RV370, 4 píxeles/ciclo a 325 MHz) tiene un
 fill rate teórico de 1,3 Gpíxel/s. El límite práctico ya no es el píxel sino el

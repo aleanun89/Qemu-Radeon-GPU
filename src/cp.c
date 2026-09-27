@@ -42,6 +42,11 @@ static void cp_reg_write(RLGDevice *d, uint32_t reg, uint32_t v)
         d->cp.faults++;
         return;
     }
+    /* 3D state (0x2000-0x4fff) and WAIT_UNTIL leave batched draws pending; any
+     * other register (2D engine, scratch, fences, interrupts) may expose VRAM */
+    if ((reg < 0x2000u || reg >= 0x5000u) && reg != RLG_WAIT_UNTIL) {
+        r3d_vk_flush(d);
+    }
     rlg_mmio_write(d, reg, v, 4);
 }
 
@@ -162,6 +167,9 @@ int rlg__cp_exec_ib(RLGDevice *d, uint32_t gpu_addr, uint32_t ndw)
     d->cp.depth++;
     r = exec_stream(d, &st, ndw);
     d->cp.depth--;
+    if (!d->cp.busy) {
+        r3d_vk_flush(d);                    /* IB kicked directly through MMIO */
+    }
     return r;
 }
 
@@ -198,6 +206,7 @@ int rlg_cp_process(RLGDevice *d)
     d->cp.busy = true;
     r = exec_stream(d, &st, 2u * n);
     d->cp.busy = false;
+    r3d_vk_flush(d);                        /* the guest may look at VRAM from here on */
 
     if (!(d->cp.cntl & RLG_RB_NO_UPDATE) && d->cp.rptr_addr) {
         if (rlg_gpu_write(d, d->cp.rptr_addr & ~3u, &d->cp.rptr, 4) != 0) {

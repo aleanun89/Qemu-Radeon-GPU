@@ -10,7 +10,18 @@
   draws por formato, tamaño, niveles y swizzle, en lugar de crear y liberar
   memoria en cada draw (0,65 ms → ~0).
 - **Resultado en `bench-3d`:** de 5,25 a 0,33 ms/draw (58,5 → 935 Mpíxel/s).
-  Lo que queda es la espera del fence por draw.
+- **Draws en lotes:**
+  - los draws de una ejecución del CP se graban en un único command buffer;
+  - el colour/depth target sube una vez por lote, se queda residente y solo se
+    copian de vuelta las filas modificadas;
+  - el lote se vacía (`r3d_vk_flush`) al final de cada ejecución del CP, antes
+    de escribir un registro que no sea 3D (2D, scratch, fences, IRQ; se excluye
+    `WAIT_UNTIL`), antes de un fallback por software, si una textura solapa el
+    target, al cambiar de target o al llegar a 256 draws;
+  - `bench-3d` admite draws por kick y tamaño de quad: con 16 draws por kick se
+    pasa de ~4.750 a ~17.500 draws/s en quads de 64×64;
+  - test nuevo `test_batched`: cinco draws con cambios de estado en un kick.
+    Quitar el flush del final del CP o la residencia del target lo hace fallar.
 
 ## Backend Vulkan del 3D (fase 1)
 

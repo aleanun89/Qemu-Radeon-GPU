@@ -188,3 +188,6 @@ void r3d_rs_eval(RLGDevice *d, const R3DDrawInfo *info, const float color[R3D_MA
 /* vk_backend.c: draw the triangles on the host GPU. Returns 0 on success, or a
  * negative value when the state is not supported (caller rasterizes in software). */
 int r3d_vk_draw(RLGDevice *d, const R3DDrawInfo *info, const R3DTri *tris, unsigned count);
+/* Draws are batched: this submits them and writes the render target back into
+ * VRAM. Called whenever anything else may read or write that memory. */
+void r3d_vk_flush(RLGDevice *d);

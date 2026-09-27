@@ -7,3 +7,6 @@ build/
 # Proprietary VBIOS images: never commit
 bios/
 *.rom
+# Proprietary img
+demo_img/
+*.qcow2

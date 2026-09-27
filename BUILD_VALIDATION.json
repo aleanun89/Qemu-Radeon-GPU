@@ -30,7 +30,8 @@
     "FS ALU vs hand-computed results: MAD, DP3/DP4, CMP (hw arg order), presub 1-x, YZX swizzle, RCP + DIV8 + REPL_ALPHA",
     "mip selection by quad derivatives with level offsets from Mesa r300_texture_desc.c rules (RS690 alignment)",
     "back-face culling and 24/8 stencil REPLACE/EQUAL",
-    "CBZB clear (ZB_BW_CNTL.CB_CLEAR writes ZB_DEPTHCLEARVALUE into the lower half)"
+    "CBZB clear (ZB_BW_CNTL.CB_CLEAR writes ZB_DEPTHCLEARVALUE into the lower half)",
+    "batched draws: 5 draws with PACKET0 state changes in one CP run (depth carried, additive blend, one Vulkan batch)"
   ],
   "tests_status": "passed",
   "tests_mutation_check": "reintroducing the v3 PTE-valid bit and SC_TOP_LEFT decode makes 10 checks fail; breaking the PCIe PTE decode makes 3 checks fail; disabling the PCI GART makes 12 checks fail; 3D: swapping CMP args, float24 bias 62, dropping the RS690 stride rule or flipping cull orientation each make test_3d fail",
@@ -44,9 +45,9 @@
   "vulkan_backend": {
     "build": "zig cc 0.16.0 with Khronos Vulkan-Headers (header 1.4.364), -DRLG_HAVE_VULKAN=1; the loader is opened at run time (no link-time dependency); also built and tested without Vulkan headers (stubs)",
     "gpu": "AMD Radeon RX 9070 XT, Vulkan 1.4.349, loader 1.4.341 (Windows 11)",
-    "tests": "test-3d vulkan: all 14 groups pass; 24 draws on the GPU, 1 expected software fallback (CBZB clear)",
-    "mutation_check": "CMP operand swap, presub 1-x -> 1+x, BC red/blue swap, stencil op shift and mip level offsets each make 'test-3d vulkan' fail",
-    "benchmark": "tests/bench_3d.c, 640x480 full-screen textured quad: software 101.84 ms/draw (3.0 Mpixel/s), Vulkan phase 1 initially 5.25 ms/draw (58.5 Mpixel/s), 0.33 ms/draw (935 Mpixel/s) after moving the readback staging buffer to HOST_CACHED memory (3.5 ms -> 0.04 ms) and caching images/samplers (0.65 ms -> ~0); remaining cost is the per-draw fence wait (~0.22 ms)",
+    "tests": "test-3d vulkan: all 15 groups pass; 29 draws on the GPU, 1 expected software fallback (CBZB clear)",
+    "mutation_check": "removing the end-of-CP flush or target residency makes test_batched fail; CMP operand swap, presub 1-x -> 1+x, BC red/blue swap, stencil op shift and mip level offsets each make 'test-3d vulkan' fail",
+    "benchmark": "tests/bench_3d.c, 640x480 full-screen textured quad: software 101.84 ms/draw (3.0 Mpixel/s), Vulkan phase 1 initially 5.25 ms/draw (58.5 Mpixel/s), 0.33 ms/draw (935 Mpixel/s) after moving the readback staging buffer to HOST_CACHED memory (3.5 ms -> 0.04 ms) and caching images/samplers (0.65 ms -> ~0); with draw batching per CP run, 16 draws per kick: 0.080 ms/draw full screen (3858 Mpixel/s) and 17.5k draws/s for 64x64 quads (4.75k with one draw per kick)",
     "spirv_validation": "no spirv-val available; modules were accepted and executed correctly by the AMD driver; opcode values checked against SPIRV-Headers"
   },
   "qemu_meson_vulkan": "patcher emits cc.has_header('vulkan/vulkan.h') -> -DRLG_HAVE_VULKAN=1 and cc.find_library('dl'); not built inside a QEMU tree"
