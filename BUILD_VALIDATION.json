@@ -1,0 +1,25 @@
+{
+  "version": "v4",
+  "date": "2026-09-27",
+  "standalone_core": "built with zig cc 0.16.0 (clang) on Windows x86_64: -std=c11 -Wall -Wextra -Werror -Wmissing-prototypes -Wstrict-prototypes -Wshadow -fsanitize=undefined",
+  "tests": [
+    "chip profiles and PCI IDs",
+    "MM_INDEX/MM_DATA recursion guard and VRAM byte access",
+    "GEN_INT_STATUS write-1-to-clear with byte writes, SW_INT_FIRE fence IRQ",
+    "legacy CRTC mode (pitch in 8-pixel units, CRTC_DISPLAY_DIS)",
+    "2D PATCOPY/SRCCOPY via *_PITCH_OFFSET in MC space, scissor, Y_X decode",
+    "RS690 MC indirect access, FB location, RS400 GART (page-crossing, invalid PTE)",
+    "CP ring + CSQ gating + indirect buffer + ONE_REG_WR + fence + RPTR/scratch writeback + incomplete packet",
+    "AVIVO D1 scanout and VBlank interrupt/ack",
+    "RS600 flat page table GART",
+    "X700 (RV410): PCIe indirect space, RV370 PCIe GART (table in VRAM, >4 GiB PTE, last-page bound), ring + IB + fence, legacy scanout"
+  ],
+  "tests_status": "passed",
+  "tests_mutation_check": "reintroducing the v3 PTE-valid bit and SC_TOP_LEFT decode makes 10 checks fail; breaking the PCIe PTE decode makes 3 checks fail",
+  "demo": "rs480, x300, x700xt (legacy CRTC), rs600 and rs690 (AVIVO) 640x480x32 scanout + 2D fill passed",
+  "qemu_pcie_note": "hybrid PCI/PCIe pattern (INTERFACE_PCIE_DEVICE + QEMU_PCI_CAP_EXPRESS in a parent-realize wrapper + pcie_endpoint_cap_init) follows hw/virtio/virtio-pci.c; signatures checked against QEMU master headers, not compiled",
+  "vulkan_backend_compiled_with_sdk": false,
+  "qemu_overlay_patcher": "run twice against hw/display/{meson.build,Kconfig,vga_int.h} from QEMU master 11.1.50: idempotent",
+  "qemu_adapter_full_compile": false,
+  "qemu_adapter_note": "API usage checked against QEMU master hw/display/ati.c and vga.c (11.1.50); not compiled inside a full QEMU tree and not booted with a guest."
+}
